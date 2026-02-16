@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satorilib"
+version = "0.1.0"
+description = "Satori Library"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Satori Team"}
+]
+
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["satorilib*"]
+exclude = ["tests*"]
