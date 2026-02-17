@@ -159,12 +159,12 @@ class MultiRelayManager:
             self._relay_status[relay_url].last_event_time = int(time.time())
 
         # Check for duplicate
-        if self._dedupe.contains(event_id):
+        if self._dedupe.is_seen(event_id):
             self._stats["events_deduplicated"] += 1
             return False
 
         # New event
-        self._dedupe.add(event_id)
+        self._dedupe.mark_seen(event_id)
         self._stats["events_received"] += 1
         return True
 
@@ -177,7 +177,7 @@ class MultiRelayManager:
         Returns:
             True if duplicate, False if new
         """
-        return self._dedupe.contains(event_id)
+        return self._dedupe.is_seen(event_id)
 
     def add_event(self, event_id: str):
         """Add event ID to dedupe cache.
@@ -185,7 +185,7 @@ class MultiRelayManager:
         Args:
             event_id: Nostr event ID
         """
-        self._dedupe.add(event_id)
+        self._dedupe.mark_seen(event_id)
 
     def get_relay_status(self, relay_url: str) -> Optional[RelayStatus]:
         """Get status of a specific relay.

@@ -9,6 +9,7 @@ import time
 import json
 from typing import Optional, AsyncIterator
 from dataclasses import dataclass
+from datetime import timedelta
 
 from nostr_sdk import (
     Keys,
@@ -21,6 +22,9 @@ from nostr_sdk import (
     Event,
     SecretKey,
     Timestamp,
+    NostrSigner,
+    RelayUrl,
+    HandleNotification,
 )
 
 from .models import (
@@ -171,14 +175,15 @@ class SatoriNostr:
             raise RuntimeError("Client is already running")
 
         # Create nostr-sdk client
-        self._client = Client(self._keys)
+        self._client = Client(NostrSigner.keys(self._keys))
 
         # Add relays
         for relay_url in self.config.relay_urls:
-            await self._client.add_relay(relay_url)
+            await self._client.add_relay(RelayUrl.parse(relay_url))
 
-        # Connect to relays
+        # Connect to relays and wait for connection
         await self._client.connect()
+        await self._client.wait_for_connection(timedelta(seconds=5))
 
         # Start listening for events
         self._listener_task = asyncio.create_task(self._event_listener())
@@ -243,19 +248,18 @@ class SatoriNostr:
         tags.append(Tag.parse(["stream", compute_stream_topic_tag(metadata.stream_name)]))
 
         # Build event with metadata as content
-        event = EventBuilder(
+        builder = EventBuilder(
             Kind(KIND_DATASTREAM_ANNOUNCE),
             metadata.to_json(),
-            tags
-        ).to_event(self._keys)
+        ).tags(tags)
 
         # Publish to relays
-        event_id = await self._client.send_event(event)
+        output = await self._client.send_event_builder(builder)
 
         # Track announced stream
         self._announced_streams[metadata.stream_name] = metadata
 
-        return event_id.to_hex()
+        return output.id.to_hex()
 
     async def publish_observation(
         self,
@@ -303,14 +307,13 @@ class SatoriNostr:
                 Tag.parse(["satori", "observation"]),
             ]
 
-            event = EventBuilder(
+            builder = EventBuilder(
                 Kind(KIND_DATASTREAM_DATA),
                 content,
-                tags
-            ).to_event(self._keys)
+            ).tags(tags)
 
-            event_id = await self._client.send_event(event)
-            event_ids.append(event_id.to_hex())
+            output = await self._client.send_event_builder(builder)
+            event_ids.append(output.id.to_hex())
             self._stats["observations_sent"] += 1
         else:
             # Paid stream: encrypt and send per subscriber
@@ -327,14 +330,13 @@ class SatoriNostr:
                             Tag.parse(["seq", str(seq_num)]),
                         ]
 
-                        event = EventBuilder(
+                        builder = EventBuilder(
                             Kind(KIND_DATASTREAM_DATA),
                             encrypted,
-                            tags
-                        ).to_event(self._keys)
+                        ).tags(tags)
 
-                        event_id = await self._client.send_event(event)
-                        event_ids.append(event_id.to_hex())
+                        output = await self._client.send_event_builder(builder)
+                        event_ids.append(output.id.to_hex())
                         self._stats["observations_sent"] += 1
 
                     except Exception as e:
@@ -437,7 +439,9 @@ class SatoriNostr:
                 filter_builder = filter_builder.hashtag(tag)
 
         # Query relays
-        events = await self._client.get_events_of([filter_builder])
+        events_obj = await self._client.fetch_events(
+            filter_builder, timedelta(seconds=10))
+        events = events_obj.to_vec()
 
         # Parse metadata from events
         datastreams = []
@@ -474,20 +478,25 @@ class SatoriNostr:
         if not self._running or not self._client:
             raise RuntimeError("Client not running")
 
-        # Query for latest observation event for this stream
-        # The event timestamp is public even if content is encrypted
+        # Query for latest observation events for this kind
+        # Note: relay-side filtering by multi-letter tags ("stream") is not
+        # supported in NIP-01, so we fetch recent events and filter client-side.
         filter_builder = (
             Filter()
             .kind(Kind(KIND_DATASTREAM_DATA))
-            .custom_tag("stream", stream_name)
-            .limit(1)
+            .limit(50)
         )
 
-        events = await self._client.get_events_of([filter_builder])
+        events_obj = await self._client.fetch_events(
+            filter_builder, timedelta(seconds=10))
+        events = events_obj.to_vec()
 
-        if events:
-            # Nostr SDK returns events sorted by timestamp (newest first)
-            return events[0].created_at().as_secs()
+        # Filter client-side for the specific stream
+        for event in events:
+            for tag in event.tags().to_vec():
+                tag_vec = tag.as_vec()
+                if len(tag_vec) >= 2 and tag_vec[0] == "stream" and tag_vec[1] == stream_name:
+                    return event.created_at().as_secs()
 
         return None
 
@@ -572,18 +581,17 @@ class SatoriNostr:
         ]
 
         # Publish announcement
-        event = EventBuilder(
+        builder = EventBuilder(
             Kind(KIND_SUBSCRIPTION_ANNOUNCE),
             sub.to_json(),
-            tags
-        ).to_event(self._keys)
+        ).tags(tags)
 
-        event_id = await self._client.send_event(event)
+        output = await self._client.send_event_builder(builder)
 
         # Update statistics
         self._stats["subscriptions_announced"] += 1
 
-        return event_id.to_hex()
+        return output.id.to_hex()
 
     async def send_payment(
         self,
@@ -637,18 +645,17 @@ class SatoriNostr:
         ]
 
         # Send encrypted payment notification
-        event = EventBuilder(
+        builder = EventBuilder(
             Kind(KIND_PAYMENT),
             encrypted,
-            tags
-        ).to_event(self._keys)
+        ).tags(tags)
 
-        event_id = await self._client.send_event(event)
+        output = await self._client.send_event_builder(builder)
 
         # Update statistics
         self._stats["payments_sent"] += 1
 
-        return event_id.to_hex()
+        return output.id.to_hex()
 
     # ========================================================================
     # CONSUMER APIs (async iteration)
@@ -711,10 +718,12 @@ class SatoriNostr:
         if not self._running or not self._client:
             raise RuntimeError("Client not running")
 
-        # Query for this specific stream
-        filter_obj = Filter().kind(Kind(KIND_DATASTREAM_ANNOUNCE)).custom_tag("d", [stream_name])
+        # Query for this specific stream (d-tag is the replaceable event identifier)
+        filter_obj = Filter().kind(Kind(KIND_DATASTREAM_ANNOUNCE)).identifier(stream_name)
 
-        events = await self._client.get_events_of([filter_obj])
+        events_obj = await self._client.fetch_events(
+            filter_obj, timedelta(seconds=10))
+        events = events_obj.to_vec()
 
         if events:
             try:
@@ -770,15 +779,14 @@ class SatoriNostr:
         ]
 
         # Publish announcement
-        event = EventBuilder(
+        builder = EventBuilder(
             Kind(KIND_SUBSCRIPTION_ANNOUNCE),
             unsub.to_json(),
-            tags
-        ).to_event(self._keys)
+        ).tags(tags)
 
-        event_id = await self._client.send_event(event)
+        output = await self._client.send_event_builder(builder)
 
-        return event_id.to_hex()
+        return output.id.to_hex()
 
     def get_statistics(self) -> dict[str, int]:
         """Get client statistics.
@@ -826,34 +834,30 @@ class SatoriNostr:
         if not self._client:
             return
 
-        # Subscribe to relevant event kinds
-        filters = [
-            # Encrypted observations sent to me (kind 30101, tagged with my pubkey)
-            Filter().kind(Kind(KIND_DATASTREAM_DATA)).pubkey(self._keys.public_key()),
-            # Free broadcast observations (kind 30101, no p-tag / not addressed to anyone specific)
-            Filter().kind(Kind(KIND_DATASTREAM_DATA)).custom_tag("satori", "observation"),
-            # Payments sent to me (kind 30103)
-            Filter().kind(Kind(KIND_PAYMENT)).pubkey(self._keys.public_key()),
-            # Subscription announcements (kind 30102) - if I'm a provider
-            Filter().kind(Kind(KIND_SUBSCRIPTION_ANNOUNCE)),
-        ]
+        # Subscribe to all Satori event kinds
+        satori_filter = Filter().kinds([
+            Kind(KIND_DATASTREAM_DATA),
+            Kind(KIND_SUBSCRIPTION_ANNOUNCE),
+            Kind(KIND_PAYMENT),
+        ])
+        await self._client.subscribe(satori_filter)
 
-        await self._client.subscribe(filters)
+        # Process events via callback handler
+        client_ref = self
 
-        # Process events
-        while self._running:
-            try:
-                # Get notifications from relays
-                notifications = await self._client.notifications()
+        class _Handler(HandleNotification):
+            async def handle(self, relay_url, subscription_id, event):
+                await client_ref._handle_event(event)
 
-                async for notification in notifications:
-                    if notification.is_event():
-                        event = notification.as_event()
-                        await self._handle_event(event)
+            async def handle_msg(self, relay_url, msg):
+                pass
 
-            except Exception as e:
-                print(f"Error in event listener: {e}")
-                await asyncio.sleep(1)
+        try:
+            await self._client.handle_notifications(_Handler())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Error in event listener: {e}")
 
     async def _handle_event(self, event: Event) -> None:
         """Handle a received Nostr event.
@@ -863,9 +867,9 @@ class SatoriNostr:
         """
         # Check for duplicates
         event_id = event.id().to_hex()
-        if self._dedupe.contains(event_id):
+        if self._dedupe.is_seen(event_id):
             return
-        self._dedupe.add(event_id)
+        self._dedupe.mark_seen(event_id)
 
         kind = event.kind().as_u16()
 
