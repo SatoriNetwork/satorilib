@@ -435,6 +435,16 @@ class SatoriServerClient(object):
             logging.warning(f'central-lite health check failed in checkinCheck: {e}')
             return True  # failed - trigger restart
 
+    def getRelays(self) -> list[dict]:
+        """Get all verified relays from central server.
+
+        Returns list of dicts: {relay_url, nostr_pubkey}
+        """
+        r = self._makeAuthenticatedCall(
+            function=requests.get,
+            endpoint='/api/v1/peer/relays')
+        return r.json()
+
     def registerRelay(self, relayUrl: str) -> dict:
         """Register a relay URL with central server for NIP-11 verification."""
         return self._makeAuthenticatedCall(

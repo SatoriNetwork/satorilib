@@ -45,7 +45,7 @@ class DatastreamMetadata:
         """Deserialize from JSON string."""
         return cls.from_dict(json.loads(json_str))
 
-    def is_likely_active(self, last_observation_time: int, max_staleness_multiplier: float = 2.0) -> bool:
+    def is_likely_active(self, last_observation_time: int, max_staleness_multiplier: float = 1.5) -> bool:
         """Check if stream appears to be actively publishing.
 
         Args:
@@ -60,7 +60,7 @@ class DatastreamMetadata:
             >>> # Stream publishes hourly, last observation 1.5 hours ago
             >>> last_obs_time = int(time.time()) - 5400  # 1.5 hours ago
             >>> metadata.cadence_seconds = 3600
-            >>> metadata.is_likely_active(last_obs_time)  # True (within 2 * 3600 = 7200 seconds)
+            >>> metadata.is_likely_active(last_obs_time)  # True (within 1.5 * 3600 = 5400 seconds)
         """
         now = int(time.time())
         time_since_update = now - last_observation_time
