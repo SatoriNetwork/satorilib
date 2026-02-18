@@ -247,6 +247,15 @@ class SatoriNostr:
         # Add stream topic tag
         tags.append(Tag.parse(["stream", compute_stream_topic_tag(metadata.stream_name)]))
 
+        # Add source lineage tags if this stream predicts another
+        if metadata.metadata:
+            src_stream = metadata.metadata.get('source_stream_name')
+            src_pubkey = metadata.metadata.get('source_provider_pubkey')
+            if src_stream:
+                tags.append(Tag.parse(["source_stream", src_stream]))
+            if src_pubkey:
+                tags.append(Tag.parse(["source_pubkey", src_pubkey]))
+
         # Build event with metadata as content
         builder = EventBuilder(
             Kind(KIND_DATASTREAM_ANNOUNCE),
