@@ -14,7 +14,7 @@ from typing import Any
 class DatastreamMetadata:
     """Public metadata about a datastream.
 
-    Published as kind 30100 event (plaintext, discoverable).
+    Published as kind 34600 event (plaintext, discoverable).
     """
     stream_name: str         # Human-readable unique name (e.g., "bitcoin-price", "weather-nyc")
     nostr_pubkey: str        # Provider's Nostr public key (hex) - signs events, enforces uniqueness
@@ -107,7 +107,7 @@ class DatastreamMetadata:
 class DatastreamObservation:
     """A single data point in a datastream.
 
-    Published as kind 30101 event (encrypted DM to each paid subscriber).
+    Published as kind 34601 event (parameterized replaceable, relay keeps latest per stream).
     """
     stream_name: str         # Which stream this belongs to
     timestamp: int           # Observation time (Unix timestamp)
@@ -147,7 +147,7 @@ class DatastreamObservation:
 class SubscriptionAnnouncement:
     """Public announcement of a datastream subscription.
 
-    Published as kind 30102 event (plaintext, for accountability).
+    Published as kind 34602 event (plaintext, for accountability).
     Lets everyone see who is subscribing to what streams.
     """
     subscriber_pubkey: str   # Who is subscribing (hex)
@@ -179,7 +179,7 @@ class SubscriptionAnnouncement:
 class PaymentNotification:
     """Payment notification from subscriber to provider.
 
-    Published as kind 30103 event (encrypted DM to provider).
+    Published as kind 34603 event (encrypted DM to provider).
     Public metadata visible: stream_name, seq_num, timestamp
     Private: amount (optional), transaction details
     """
@@ -242,10 +242,10 @@ class SatoriNostrConfig:
 
 
 # Event kind constants
-KIND_DATASTREAM_ANNOUNCE = 30100    # Datastream metadata announcement
-KIND_DATASTREAM_DATA = 30101        # Observation data (encrypted DM)
-KIND_SUBSCRIPTION_ANNOUNCE = 30102  # Subscription announcement
-KIND_PAYMENT = 30103                # Payment notification (encrypted DM)
+KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
+KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
+KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized replaceable, d=stream_name)
+KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name)
 
 
 # Standard cadence values (in seconds)

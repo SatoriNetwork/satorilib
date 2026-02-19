@@ -220,7 +220,7 @@ class SatoriNostr:
     async def announce_datastream(self, metadata: DatastreamMetadata) -> str:
         """Announce a datastream (provider).
 
-        Publishes stream metadata as a kind 30100 event (public, discoverable).
+        Publishes stream metadata as a kind 34600 event (public, discoverable).
 
         Args:
             metadata: Datastream metadata to announce
@@ -277,7 +277,7 @@ class SatoriNostr:
     ) -> list[str]:
         """Publish an observation to all paid subscribers (provider).
 
-        Sends encrypted DMs (kind 30101) to each subscriber who has paid
+        Sends encrypted DMs (kind 34601) to each subscriber who has paid
         for this observation's sequence number.
 
         Args:
@@ -311,6 +311,7 @@ class SatoriNostr:
                     obs_json, self._keys.public_key(), self._keys)
 
             tags = [
+                Tag.parse(["d", stream_name]),  # Replaceable: latest obs per stream
                 Tag.parse(["stream", stream_name]),
                 Tag.parse(["seq", str(seq_num)]),
                 Tag.parse(["satori", "observation"]),
@@ -334,6 +335,7 @@ class SatoriNostr:
                             obs_json, recipient_pubkey, self._keys)
 
                         tags = [
+                            Tag.parse(["d", stream_name]),  # Replaceable: latest obs per stream
                             Tag.parse(["p", sub_pubkey]),
                             Tag.parse(["stream", stream_name]),
                             Tag.parse(["seq", str(seq_num)]),
@@ -424,7 +426,7 @@ class SatoriNostr:
     ) -> list[DatastreamMetadata]:
         """Discover available datastreams (subscriber).
 
-        Queries relays for datastream announcements (kind 30100).
+        Queries relays for datastream announcements (kind 34600).
 
         Args:
             tags: Optional list of tags to filter by
@@ -463,50 +465,67 @@ class SatoriNostr:
 
         return datastreams
 
-    async def get_last_observation_time(self, stream_name: str) -> int | None:
-        """Get timestamp of the last published observation for a stream.
+    async def get_last_observation(self, stream_name: str) -> InboundObservation | None:
+        """Get the latest observation for a stream from the relay.
 
-        Queries relays for the most recent observation event (kind 30101) for the stream.
-        Note: Event timestamps are public even if content is encrypted.
+        Queries relays for the most recent observation event (kind 34601)
+        using the d-tag (stream_name). Returns the full parsed observation
+        so callers can save it and process it like any other received observation.
 
         Args:
             stream_name: Stream identifier
 
         Returns:
-            Unix timestamp of last observation, or None if no observations found
+            InboundObservation or None if no observations found
 
         Raises:
             RuntimeError: If client not running
-
-        Example:
-            >>> last_time = await client.get_last_observation_time("btc-price")
-            >>> if last_time:
-            ...     age = time.time() - last_time
-            ...     print(f"Last observation was {age} seconds ago")
         """
         if not self._running or not self._client:
             raise RuntimeError("Client not running")
 
-        # Query for latest observation events for this kind
-        # Note: relay-side filtering by multi-letter tags ("stream") is not
-        # supported in NIP-01, so we fetch recent events and filter client-side.
+        # Query for latest observation by d-tag (stream_name)
         filter_builder = (
             Filter()
             .kind(Kind(KIND_DATASTREAM_DATA))
-            .limit(50)
+            .identifier(stream_name)
+            .limit(1)
         )
 
         events_obj = await self._client.fetch_events(
             filter_builder, timedelta(seconds=10))
         events = events_obj.to_vec()
 
-        # Filter client-side for the specific stream
-        for event in events:
-            for tag in event.tags().to_vec():
-                tag_vec = tag.as_vec()
-                if len(tag_vec) >= 2 and tag_vec[0] == "stream" and tag_vec[1] == stream_name:
-                    return event.created_at().as_secs()
+        if not events:
+            return None
 
+        event = events[0]
+        try:
+            sender_pubkey = event.author()
+            content = event.content()
+            try:
+                observation = DatastreamObservation.from_json(content)
+            except Exception:
+                obs_json = decrypt_observation(
+                    content, sender_pubkey, self._keys)
+                observation = DatastreamObservation.from_json(obs_json)
+            return InboundObservation(
+                stream_name=observation.stream_name,
+                nostr_pubkey=sender_pubkey.to_hex(),
+                observation=observation,
+                event_id=event.id().to_hex(),
+            )
+        except Exception:
+            return None
+
+    async def get_last_observation_time(self, stream_name: str) -> int | None:
+        """Get timestamp of the last published observation for a stream.
+
+        Convenience wrapper around get_last_observation() for freshness checks.
+        """
+        obs = await self.get_last_observation(stream_name)
+        if obs and obs.observation:
+            return obs.observation.timestamp
         return None
 
     async def discover_active_datastreams(
@@ -557,7 +576,7 @@ class SatoriNostr:
     ) -> str:
         """Subscribe to a datastream (subscriber).
 
-        Publishes a subscription announcement (kind 30102, public).
+        Publishes a subscription announcement (kind 34602, public).
 
         Args:
             stream_name: Stream identifier to subscribe to
@@ -584,6 +603,7 @@ class SatoriNostr:
 
         # Build tags
         tags = [
+            Tag.parse(["d", stream_name]),  # Replaceable: latest sub state per stream
             Tag.parse(["p", provider_pubkey]),  # Tag provider
             Tag.parse(["stream", stream_name]),
             Tag.parse(["satori", "subscription"]),
@@ -612,7 +632,7 @@ class SatoriNostr:
     ) -> str:
         """Send payment notification to provider (subscriber).
 
-        Sends encrypted DM (kind 30103) to provider.
+        Sends encrypted DM (kind 34603) to provider.
 
         Args:
             provider_pubkey: Provider's public key (hex)
@@ -648,6 +668,7 @@ class SatoriNostr:
 
         # Build tags
         tags = [
+            Tag.parse(["d", stream_name]),  # Replaceable: latest payment per stream
             Tag.parse(["p", provider_pubkey]),
             Tag.parse(["stream", stream_name]),
             Tag.parse(["seq", str(seq_num)]),
@@ -755,7 +776,7 @@ class SatoriNostr:
     async def unsubscribe_datastream(self, stream_name: str, provider_pubkey: str) -> str:
         """Unsubscribe from a datastream.
 
-        Publishes an unsubscription announcement (kind 30102 with unsubscribe tag).
+        Publishes an unsubscription announcement (kind 34602 with unsubscribe tag).
 
         Args:
             stream_name: Stream identifier to unsubscribe from
@@ -781,6 +802,7 @@ class SatoriNostr:
 
         # Build tags with unsubscribe marker
         tags = [
+            Tag.parse(["d", stream_name]),  # Replaces the subscription announcement
             Tag.parse(["p", provider_pubkey]),
             Tag.parse(["stream", stream_name]),
             Tag.parse(["action", "unsubscribe"]),  # Mark as unsubscribe
@@ -893,7 +915,7 @@ class SatoriNostr:
             await self._handle_subscription_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
-        """Handle an observation data event (kind 30101).
+        """Handle an observation data event (kind 34601).
 
         Free streams broadcast plaintext content.
         Paid streams encrypt per-subscriber via NIP-04.
@@ -926,7 +948,7 @@ class SatoriNostr:
             print(f"Error handling observation event: {e}")
 
     async def _handle_payment_event(self, event: Event) -> None:
-        """Handle a payment notification event (kind 30103)."""
+        """Handle a payment notification event (kind 34603)."""
         try:
             # Decrypt payment
             sender_pubkey = event.author()
@@ -960,7 +982,7 @@ class SatoriNostr:
             print(f"Error handling payment event: {e}")
 
     async def _handle_subscription_event(self, event: Event) -> None:
-        """Handle a subscription announcement event (kind 30102)."""
+        """Handle a subscription announcement event (kind 34602)."""
         try:
             # Parse subscription (public content)
             sub = SubscriptionAnnouncement.from_json(event.content())
