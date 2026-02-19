@@ -65,9 +65,9 @@ class DatastreamMetadata:
         now = int(time.time())
         time_since_update = now - last_observation_time
 
-        if self.cadence_seconds is None:
-            # Irregular cadence: consider active if updated in last 24 hours
-            return time_since_update < 86400
+        if self.cadence_seconds is None or self.cadence_seconds <= 0:
+            # No cadence: always considered active
+            return True
         else:
             # Regular cadence: check against expected cadence with tolerance
             max_delay = self.cadence_seconds * max_staleness_multiplier
