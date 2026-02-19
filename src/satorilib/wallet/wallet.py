@@ -1268,8 +1268,12 @@ class Wallet(WalletBase):
         address: str,
         pullFeeFromAmount: bool = False,
         feeSatsReserved: int = 0,
+        feeSats: int = 0,
+        satoriFeeAmount: int = 0,
         completerAddress: str = None,
         changeAddress: str = None,
+        satoriFeeAddress: str = None,
+        **kwargs,
     ) -> tuple[str, int]:
         '''
         if people do not have a balance of evr, they can still send satori.
@@ -1297,15 +1301,14 @@ class Wallet(WalletBase):
             raise TransactionFailure('need completer details')
         if (
             amount <= 0 or
-            # not TxUtils.isAmountDivisibilityValid(
-            #    amount=amount,
-            #    divisibility=self.divisibility) or
             not Validate.address(address, self.symbol)
         ):
             raise TransactionFailure('satoriTransaction bad params')
+        # use Mundo-provided SATORI fee, fall back to hardcoded default
+        mundoFeeSats = satoriFeeAmount if satoriFeeAmount > 0 else TxUtils.asSats(self.mundoFee)
+        mundoFeeFloat = TxUtils.asAmount(mundoFeeSats)
         if pullFeeFromAmount:
-            amount -= self.mundoFee
-        mundoFeeSats = TxUtils.asSats(self.mundoFee)
+            amount -= mundoFeeFloat
         satoriSats = TxUtils.roundSatsDownToDivisibility(
             sats=TxUtils.asSats(amount),
             divisibility=self.divisibility)
@@ -1319,20 +1322,29 @@ class Wallet(WalletBase):
         satoriChangeOut = self._compileSatoriChangeOutput(
             satoriSats=satoriSats,
             gatheredSatoriSats=gatheredSatoriSats - mundoFeeSats)
-        # fee out to server
+        # SATORI fee out to Mundo
+        feeAddr = satoriFeeAddress or completerAddress
         mundoFeeOut = self._compileSatoriOutputs(
-            {completerAddress: mundoFeeSats})[0]
+            {feeAddr: mundoFeeSats})[0]
         if mundoFeeOut is None:
             raise TransactionFailure('unable to generate mundo fee')
-        # change out to server
-        currencyChangeOut, currencyChange = self._compileCurrencyChangeOutput(
-            gatheredCurrencySats=feeSatsReserved,
-            inputCount=len(gatheredSatoriUnspents),
-            # len([mundoFeeOut, currencyChange]) +
-            outputCount=len(satoriOuts) + 2 +
-            (1 if satoriChangeOut is not None else 0),
-            scriptPubKey=self._generateScriptPubKeyFromAddress(changeAddress),
-            returnSats=True)
+        # EVR change out to Mundo
+        if feeSats > 0:
+            # use Mundo-provided fee calculation
+            currencyChange = feeSatsReserved - feeSats
+            if currencyChange <= 0:
+                raise TransactionFailure('unable to generate currency change')
+            currencyChangeOut = self._compileCurrencyOutputs(
+                currencyChange, changeAddress)[0]
+        else:
+            # fall back to local fee estimation
+            currencyChangeOut, currencyChange = self._compileCurrencyChangeOutput(
+                gatheredCurrencySats=feeSatsReserved,
+                inputCount=len(gatheredSatoriUnspents),
+                outputCount=len(satoriOuts) + 2 +
+                (1 if satoriChangeOut is not None else 0),
+                scriptPubKey=self._generateScriptPubKeyFromAddress(changeAddress),
+                returnSats=True)
         if currencyChangeOut is None:
             raise TransactionFailure('unable to generate currency change')
         tx = self._createPartialOriginatorSimple(
@@ -1573,8 +1585,11 @@ class Wallet(WalletBase):
         self,
         address: str,
         feeSatsReserved: int = 0,
+        feeSats: int = 0,
+        satoriFeeAmount: int = 0,
         completerAddress: str = None,
         changeAddress: str = None,
+        satoriFeeAddress: str = None,
         **kwargs
     ) -> tuple[str, int]:
         '''
@@ -1589,9 +1604,10 @@ class Wallet(WalletBase):
             raise TransactionFailure('need completer details')
         if not Validate.address(address, self.symbol):
             raise TransactionFailure('sendAllTransaction')
-        # logging.debug('currency', self.currency,
-        #              'self.reserve', self.reserve, color='yellow')
-        if self.balance.amount < self.mundoFee:
+        # use Mundo-provided SATORI fee, fall back to hardcoded default
+        mundoFeeSats = satoriFeeAmount if satoriFeeAmount > 0 else TxUtils.asSats(self.mundoFee)
+        mundoFeeFloat = TxUtils.asAmount(mundoFeeSats)
+        if self.balance.amount < mundoFeeFloat:
             raise TransactionFailure(
                 'sendAllTransaction: not enough Satori for fee')
         # grab everything
@@ -1603,6 +1619,7 @@ class Wallet(WalletBase):
         txins, txinScripts = self._compileInputs(
             gatheredCurrencyUnspents=gatheredCurrencyUnspents,
             gatheredSatoriUnspents=gatheredSatoriUnspents)
+        feeAddr = satoriFeeAddress or completerAddress
         sweepOuts = (
             (
                 self._compileCurrencyOutputs(currencySats, address)
@@ -1611,18 +1628,25 @@ class Wallet(WalletBase):
                 {address:
                     TxUtils.roundSatsDownToDivisibility(
                         sats=TxUtils.asSats(
-                            self.balance.amount) - TxUtils.asSats(self.mundoFee),
+                            self.balance.amount) - mundoFeeSats,
                         divisibility=self.divisibility)}))
         mundoFeeOut = self._compileSatoriOutputs(
-            {completerAddress: TxUtils.asSats(self.mundoFee)})[0]
-        # change out to server
-        currencyChangeOut, currencyChange = self._compileCurrencyChangeOutput(
-            gatheredCurrencySats=feeSatsReserved,
-            inputCount=len(gatheredSatoriUnspents) +
-            len(gatheredCurrencyUnspents),
-            outputCount=len(sweepOuts) + 2,
-            scriptPubKey=self._generateScriptPubKeyFromAddress(changeAddress),
-            returnSats=True)
+            {feeAddr: mundoFeeSats})[0]
+        # EVR change out to Mundo
+        if feeSats > 0:
+            currencyChange = feeSatsReserved - feeSats
+            if currencyChange <= 0:
+                raise TransactionFailure('unable to generate currency change')
+            currencyChangeOut = self._compileCurrencyOutputs(
+                currencyChange, changeAddress)[0]
+        else:
+            currencyChangeOut, currencyChange = self._compileCurrencyChangeOutput(
+                gatheredCurrencySats=feeSatsReserved,
+                inputCount=len(gatheredSatoriUnspents) +
+                len(gatheredCurrencyUnspents),
+                outputCount=len(sweepOuts) + 2,
+                scriptPubKey=self._generateScriptPubKeyFromAddress(changeAddress),
+                returnSats=True)
         # since it's a send all, there's no change outputs
         tx = self._createPartialOriginatorSimple(
             txins=txins,
@@ -1636,8 +1660,8 @@ class Wallet(WalletBase):
         amount: float,
         address: str,
         sweep: bool = False,
-        requestSimplePartialFn: callable = None, # they provide send all if sweep
-        broadcastBridgeSimplePartialFn: callable = None,
+        requestSimplePartialFn: callable = None,
+        broadcastSimplePartialFn: callable = None,
     ) -> TransactionResult:
 
         def sendDirect():
@@ -1656,56 +1680,88 @@ class Wallet(WalletBase):
                 msg=f'Send Failed: {txid}')
 
         def sendIndirect():
-            responseJson = requestSimplePartialFn(network='main')
-            changeAddress = responseJson.get('changeAddress')
-            feeSatsReserved = responseJson.get('feeSatsReserved')
-            completerAddress = responseJson.get('completerAddress')
-            if feeSatsReserved == 0 or completerAddress is None:
+            evrRequiredMsg = 'No EVR in wallet, EVR is required as a transaction fee to send SATORI.'
+            if requestSimplePartialFn is None or broadcastSimplePartialFn is None:
                 return TransactionResult(
-                    result='try again',
-                    success=True,
-                    tx=None,
-                    msg='creating partial, need feeSatsReserved.')
-            sendPartialFunction = self.satoriOnlyPartialSimple
-            if sweep:
-                sendPartialFunction = self.sendAllPartialSimple
-            tx, reportedFeeSats, txhex = sendPartialFunction(
-                amount=float(amount),
-                address=address,
-                changeAddress=changeAddress,
-                feeSatsReserved=feeSatsReserved,
-                completerAddress=completerAddress,
-                pullFeeFromAmount=float(amount) + self.mundoFee > self.balance.amount)
-            if ( # checking any on of these should suffice in theory...
-                tx is not None and
-                reportedFeeSats is not None and
-                reportedFeeSats > 0
-            ):
-                r = broadcastBridgeSimplePartialFn(
-                    tx=tx,
-                    reportedFeeSats=reportedFeeSats,
+                    result=None,
+                    success=False,
+                    msg=evrRequiredMsg)
+            try:
+                # estimate input/output counts for Mundo fee calculation
+                satoriSats = TxUtils.asSats(amount) if not sweep else TxUtils.asSats(self.balance.amount)
+                try:
+                    gatheredSatoriUnspents, _ = self._gatherSatoriUnspents(satoriSats)
+                except Exception:
+                    gatheredSatoriUnspents = self.unspentAssets
+                estimatedInputCount = len(gatheredSatoriUnspents)
+                estimatedOutputCount = 3  # recipient + satori change + mundo fee
+
+                responseJson = requestSimplePartialFn(
+                    network='evrmore',
+                    inputCount=estimatedInputCount,
+                    outputCount=estimatedOutputCount)
+                changeAddress = responseJson.get('changeAddress')
+                feeSatsReserved = responseJson.get('feeSatsReserved')
+                feeSats = responseJson.get('feeSats', 0)
+                completerAddress = responseJson.get('completerAddress')
+                satoriFeeAddress = responseJson.get('satoriFeeAddress')
+                satoriFeeAmount = responseJson.get('satoriFeeAmount', 0)
+                if feeSatsReserved == 0 or completerAddress is None:
+                    return TransactionResult(
+                        result=None,
+                        success=False,
+                        msg=evrRequiredMsg)
+                mundoFeeFloat = TxUtils.asAmount(satoriFeeAmount) if satoriFeeAmount > 0 else self.mundoFee
+                sendPartialFunction = self.satoriOnlyPartialSimple
+                if sweep:
+                    sendPartialFunction = self.sendAllPartialSimple
+                tx, reportedFeeSats, txhex = sendPartialFunction(
+                    amount=float(amount),
+                    address=address,
+                    changeAddress=changeAddress,
                     feeSatsReserved=feeSatsReserved,
-                    walletId=responseJson.get('partialId'),
-                    network='evrmore')
-                if r.text.startswith('{"code":1,"message":'):
+                    feeSats=feeSats,
+                    completerAddress=completerAddress,
+                    satoriFeeAddress=satoriFeeAddress,
+                    satoriFeeAmount=satoriFeeAmount,
+                    pullFeeFromAmount=float(amount) + mundoFeeFloat > self.balance.amount)
+                if (
+                    tx is not None and
+                    reportedFeeSats is not None and
+                    reportedFeeSats > 0
+                ):
+                    # Mundo signs with signOnly=true, returns signed tx hex
+                    signedTxHex = broadcastSimplePartialFn(
+                        tx=tx,
+                        reportedFeeSats=reportedFeeSats,
+                        feeSatsReserved=feeSatsReserved,
+                        network='evrmore')
+                    if signedTxHex and len(signedTxHex) > 0:
+                        # broadcast the fully signed tx ourselves
+                        txid = self.broadcast(signedTxHex)
+                        if isinstance(txid, str) and len(txid) == 64:
+                            return TransactionResult(
+                                result=None,
+                                success=True,
+                                msg=txid)
+                        return TransactionResult(
+                            result=None,
+                            success=False,
+                            msg=f'Send Failed: broadcast error: {txid}')
                     return TransactionResult(
                         result=None,
                         success=False,
-                        msg=f'Send Failed: {r.json().get("message")}')
-                elif r.text != '':
-                    return TransactionResult(
-                        result=TxUtils.txhexToTxid(txhex),
-                        success=True,
-                        msg=r.text)
-                else:
-                    return TransactionResult(
-                        result=None,
-                        success=False,
-                        msg='Send Failed: and try again in a few minutes.')
-            return TransactionResult(
-                result=None,
-                success=False,
-                msg='unable to generate transaction')
+                        msg='Send Failed: Mundo signing failed.')
+                return TransactionResult(
+                    result=None,
+                    success=False,
+                    msg='unable to generate transaction')
+            except Exception:
+                # Mundo unreachable — fall back to EVR-required message
+                return TransactionResult(
+                    result=None,
+                    success=False,
+                    msg=evrRequiredMsg)
 
         ready, partialReady, msg = self.validateForTypicalNeuronTransaction(
             amount=amount,
@@ -1713,11 +1769,7 @@ class Wallet(WalletBase):
         if ready:
             return sendDirect()
         elif partialReady:
-            #return sendIndirect()
-            return TransactionResult(
-                result=None,
-                success=False,
-                msg=f'No EVR in wallet, EVR is required as a transaction fee to send SATORI.')
+            return sendIndirect()
         return TransactionResult(
             result=None,
             success=False,
