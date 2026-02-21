@@ -379,6 +379,62 @@ class Wallet(WalletBase):
         except Exception as e:
             logging.debug('unable to get reaedy to send', e)
 
+    def getReadyToSendSimplified(self, balance: bool = False, save: bool = True):
+        '''
+        Fast alternative to getReadyToSend for P2PKH wallets. Skips fetching
+        transactions from ElectrumX entirely by computing scriptPubKeys
+        locally from the wallet's public key. This avoids the bottleneck
+        where getUnspentTransactions fetches a raw transaction (with 0.34s
+        throttle) for EVERY UTXO tx_hash including all SATORI asset UTXOs.
+
+        For P2PKH the scriptPubKey is deterministic:
+            OP_DUP OP_HASH160 <hash160(pubkey)> OP_EQUALVERIFY OP_CHECKSIG
+        For asset UTXOs, _compileInputs() constructs the full scriptPubKey
+        (including OP_EVR_ASSET data) from the UTXO value at signing time.
+
+        NOTE: This will NOT work for P2SH addresses where the redeem script
+        must be fetched from the chain. Use getReadyToSend for P2SH wallets.
+        '''
+        if not self.electrumx.connected():
+            return
+        try:
+            self.maybeConnect()
+            if self.divisibility == 0:
+                self.getStats()
+            if balance:
+                self.getBalances()
+            self.getUnspents()
+            self.computeUnspentScriptPubKeys()
+            if save:
+                self.saveCache()
+        except Exception as e:
+            logging.debug('unable to get ready to send (simplified)', e)
+
+    def computeUnspentScriptPubKeys(self):
+        '''
+        Computes the scriptPubKey for currency UTXOs directly from the
+        wallet's public key, without fetching transactions from ElectrumX.
+        For standard P2PKH addresses the scriptPubKey is deterministic:
+            OP_DUP OP_HASH160 <hash160(pubkey)> OP_EQUALVERIFY OP_CHECKSIG
+        This is byte-for-byte identical to what's on-chain.
+
+        Asset UTXOs are left without scriptPubKey because their on-chain
+        scriptPubKey includes OP_EVR_ASSET data. _compileInputs() has a
+        fallback that correctly constructs the full asset scriptPubKey from
+        the UTXO's value and the wallet's public key at signing time.
+        '''
+        from evrmore.core import Hash160
+        from evrmore.core.script import (
+            CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG)
+        scriptPubKeyHex = CScript([
+            OP_DUP, OP_HASH160,
+            Hash160(self.publicKeyBytes),
+            OP_EQUALVERIFY, OP_CHECKSIG,
+        ]).hex()
+        for uc in (self.unspentCurrency or []):
+            if uc.get('scriptPubKey') is None:
+                uc['scriptPubKey'] = scriptPubKeyHex
+
     def getUnspents(self):
         if not self.electrumx.connected():
             return
