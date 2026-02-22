@@ -1419,6 +1419,7 @@ class Wallet(WalletBase):
         reportedFeeSats: int,
         changeAddress: Union[str, None] = None,
         completerAddress: Union[str, None] = None,
+        claimAddress: Union[str, None] = None,
         bridgeTransaction: bool = False,
     ) -> str:
         '''
@@ -1462,15 +1463,16 @@ class Wallet(WalletBase):
             return mundoPaid
 
         def _verifyClaimAddress():
-            ''' verify the claim output goes to completerAddress '''
+            ''' verify the claim output goes to claimAddress (or completerAddress) '''
+            target = claimAddress or completerAddress
             if bridgeTransaction:
                 for i, x in enumerate(tx.vout[-4].scriptPubKey):
                     if i == 2 and isinstance(x, bytes):
-                        return completerAddress == self.hash160ToAddress(x)
+                        return target == self.hash160ToAddress(x)
                 return False
             for i, x in enumerate(tx.vout[-2].scriptPubKey):
                 if i == 2 and isinstance(x, bytes):
-                    return completerAddress == self.hash160ToAddress(x)
+                    return target == self.hash160ToAddress(x)
             return False
 
         def _verifyChangeAddress():
