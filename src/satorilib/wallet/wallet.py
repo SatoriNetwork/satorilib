@@ -1421,6 +1421,7 @@ class Wallet(WalletBase):
         completerAddress: Union[str, None] = None,
         claimAddress: Union[str, None] = None,
         bridgeTransaction: bool = False,
+        signOnly: bool = False,
     ) -> str:
         '''
         a companion function to satoriOnlyPartialSimple which completes the
@@ -1516,7 +1517,10 @@ class Wallet(WalletBase):
             tx=tx,
             txins=txins,
             txinScripts=txinScripts)
-        return self.broadcast(self._txToHex(tx))
+        txHex = self._txToHex(tx)
+        if signOnly:
+            return txHex
+        return self.broadcast(txHex)
 
     def sendAllTransaction(self, address: str) -> str:
         '''
