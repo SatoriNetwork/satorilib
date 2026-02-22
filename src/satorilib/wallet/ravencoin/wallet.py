@@ -100,11 +100,18 @@ class RavencoinWallet(Wallet):
                 # doesn't pad with 0s at the end
                 # b'rvnt\x06SATORI\x00\xe1\xf5\x05'
                 # b'rvnt\x06SATORI\x00\xe1\xf5\x05\x00\x00\x00\x00'
-                return x.startswith(bytes.fromhex(
+                expected = bytes.fromhex(
                     AssetTransaction.satoriHex(self.symbol) +
                     TxUtils.padHexStringTo8Bytes(
                         TxUtils.intToLittleEndianHex(
-                            TxUtils.asSats(amount or self.mundoFee)))))
+                            TxUtils.asSats(amount or self.mundoFee))))
+                # handle both formats: with and without asset protocol
+                # length prefix byte
+                if x.startswith(expected):
+                    return True
+                if len(x) > 1 and x[1:].startswith(expected):
+                    return True
+                return False
             if x == OP_RVN_ASSET:
                 nextOne = True
         return False

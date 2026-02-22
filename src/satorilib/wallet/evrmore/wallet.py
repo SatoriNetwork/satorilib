@@ -218,20 +218,18 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 # doesn't padd with 0s at the end
                 # b'rvnt\x06SATORI\x00\xe1\xf5\x05'
                 # b'rvnt\x06SATORI\x00\xe1\xf5\x05\x00\x00\x00\x00'
-                if not x.startswith(bytes.fromhex(
+                expected = bytes.fromhex(
                     AssetTransaction.satoriHex(self.symbol) +
                     TxUtils.padHexStringTo8Bytes(
                         TxUtils.intToLittleEndianHex(
-                            TxUtils.asSats(amount or self.mundoFee))))):
-                    # logging not necessary since we call this many times, and
-                    # it only needs to succeed once...
-                    #if not x.startswith(bytes.fromhex(
-                    #    AssetTransaction.satoriHex(self.symbol))):
-                    #    logging.debug('failed to even validate mundo asset')
-                    #else:
-                    #    logging.debug('validated asset, failed valid amount')
-                    return False
-                return True
+                            TxUtils.asSats(amount or self.mundoFee))))
+                # handle both formats: with and without asset protocol
+                # length prefix byte (e.g. 0x13 for 19-byte SATORI data)
+                if x.startswith(expected):
+                    return True
+                if len(x) > 1 and x[1:].startswith(expected):
+                    return True
+                return False
             if x == OP_EVR_ASSET:
                 nextOne = True
         return False
