@@ -474,15 +474,11 @@ class Electrumx(ElectrumxConnection):
         self.listenerStop.set()
         #while self.listener.is_alive():
         #    time.sleep(1)
-        if self.persistent:
-            self.pingerStop.set()
         logging.debug('reconnecting')
         with self.lock:
             if super().reconnect():
                 #self.startListener() # no need to restart listener, because we don't kill it when disconnetced now
                 self.handshake()
-                if self.persistent:
-                    self.startPinger()
                 self.resubscribe()
                 return True
             else:
