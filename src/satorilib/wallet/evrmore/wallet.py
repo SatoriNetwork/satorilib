@@ -41,6 +41,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         skipSave: bool = False,
         pullFullTransactions: bool = True,
         balanceUpdatedCallback: Union[Callable, None] = None,
+        scriptStatusCallback: Union[Callable, None] = None,
         electrumx: Electrumx = None,
         hostPort: str = None,
         persistent: bool = False,
@@ -64,6 +65,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             hostPort=hostPort,
             persistent=persistent,
             balanceUpdatedCallback=balanceUpdatedCallback,
+            scriptStatusCallback=scriptStatusCallback,
             cachedPeersFile=cachedPeersFile,
             rpcNodes=rpcNodes,
             rpcUrl=rpcUrl,
@@ -80,6 +82,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         skipSave: bool = False,
         pullFullTransactions: bool = True,
         balanceUpdatedCallback: Union[Callable, None] = None,
+        scriptStatusCallback: Union[Callable, None] = None,
         **kwargs
     ):
         super().__init__(
@@ -90,7 +93,8 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             watchAssets=watchAssets,
             skipSave=skipSave,
             pullFullTransactions=pullFullTransactions,
-            balanceUpdatedCallback=balanceUpdatedCallback)
+            balanceUpdatedCallback=balanceUpdatedCallback,
+            scriptStatusCallback=scriptStatusCallback)
 
         # Initialize RPC client if config provided
         self._initRpcClient(

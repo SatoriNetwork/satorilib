@@ -150,6 +150,7 @@ class Wallet(WalletBase):
         skipSave: bool = False,
         pullFullTransactions: bool = True,
         balanceUpdatedCallback: Union[Callable, None] = None,
+        scriptStatusCallback: Union[Callable, None] = None,
     ):
         if walletPath == cachePath and walletPath is not None:
             raise Exception('wallet and cache paths cannot be the same')
@@ -196,6 +197,7 @@ class Wallet(WalletBase):
         self.lastBalanceAmount = 0
         self.lastCurrencyAmount = 0
         self.balanceUpdatedCallback = balanceUpdatedCallback
+        self.scriptStatusCallback = scriptStatusCallback
         self.loadCache()
         self.scriptsPath = self.walletPath.replace('.yaml', '.scripts.json')
         self.scripts: dict[str, dict] = {}
@@ -285,6 +287,15 @@ class Wallet(WalletBase):
 
     ### P2SH Script Persistence ################################################
 
+    @staticmethod
+    def p2shScripthash(p2shAddress: str) -> str:
+        ''' compute ElectrumX scripthash for a P2SH address '''
+        from base58 import b58decode_check
+        from hashlib import sha256
+        scriptHash = b58decode_check(p2shAddress)[1:]
+        scriptPubKey = bytes.fromhex('a914') + scriptHash + bytes.fromhex('87')
+        return sha256(scriptPubKey).digest()[::-1].hex()
+
     def loadScripts(self) -> bool:
         if self.skipSave:
             return False
@@ -330,7 +341,10 @@ class Wallet(WalletBase):
             merged.setdefault('status', 'pending')
         merged['wallet_address'] = self.address
         self.scripts[p2shAddress] = merged
-        return self.saveScripts()
+        result = self.saveScripts()
+        if merged.get('status') == 'funded' and existing.get('status') != 'funded':
+            self._subscribeToP2SHScript(p2shAddress)
+        return result
 
     def getScript(self, p2shAddress: str) -> Union[dict, None]:
         return self.scripts.get(p2shAddress)
@@ -377,6 +391,67 @@ class Wallet(WalletBase):
             self.electrumx.api.subscribeScripthash(
                 scripthash=self.scripthash,
                 callback=handleNotifiation))
+
+    def subscribeToP2SHScripts(self):
+        ''' subscribe to all funded/active P2SH scripts for on-chain monitoring '''
+        if not self.connected():
+            return
+        for p2shAddress, script in self.scripts.items():
+            if script.get('status') in ('funded', 'active'):
+                self._subscribeToP2SHScript(p2shAddress)
+
+    def _subscribeToP2SHScript(self, p2shAddress: str):
+        ''' subscribe to a single P2SH script's scripthash '''
+        if not self.connected():
+            return
+        script = self.scripts.get(p2shAddress)
+        if script is None:
+            return
+        scripthash = script.get('scripthash')
+        if not scripthash:
+            scripthash = self.p2shScripthash(p2shAddress)
+            script['scripthash'] = scripthash
+            self.saveScripts()
+
+        def handleNotification(notification: dict):
+            self._handleP2SHNotification(p2shAddress)
+
+        self.electrumx.api.subscribeScripthash(
+            scripthash=scripthash,
+            callback=handleNotification)
+
+    def _handleP2SHNotification(self, p2shAddress: str):
+        ''' check if funding UTXO still exists, update script status '''
+        script = self.scripts.get(p2shAddress)
+        if script is None:
+            return
+        scripthash = script.get('scripthash')
+        if not scripthash:
+            return
+        oldStatus = script.get('status')
+        try:
+            unspents = (
+                self.electrumx.api.getUnspentCurrency(scripthash) or [])
+            unspents += (
+                self.electrumx.api.getUnspentAssets(scripthash) or [])
+        except Exception as e:
+            logging.error(f'P2SH notification check failed for {p2shAddress}: {e}')
+            return
+        fundingTxid = script.get('funding_txid')
+        fundingVout = script.get('funding_vout')
+        fundingUtxoExists = any(
+            u.get('tx_hash') == fundingTxid and u.get('tx_pos') == fundingVout
+            for u in unspents)
+        if fundingUtxoExists:
+            if oldStatus == 'funded':
+                script['status'] = 'active'
+        else:
+            script['status'] = 'spent'
+        newStatus = script.get('status')
+        if newStatus != oldStatus:
+            self.saveScripts()
+            if self.scriptStatusCallback is not None:
+                self.scriptStatusCallback(p2shAddress, oldStatus, newStatus)
 
     def preSend(self) -> bool:
         self.stats = {'status': 'not connected'}
