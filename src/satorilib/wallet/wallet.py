@@ -355,6 +355,88 @@ class Wallet(WalletBase):
             return self.saveScripts()
         return False
 
+    def getScriptTimelockInfo(self, p2shAddress: str) -> Union[dict, None]:
+        '''
+        returns recall timing info for a script:
+            type: 'csv' (relative) or 'cltv' (absolute)
+            recall_available: bool
+            recall_block: absolute block height when recall opens (csv+blocks or cltv+blocks)
+            recall_time: datetime when recall opens (csv+minutes or cltv+timestamp)
+        requires funding_confirmed_height for csv/blocks calculations.
+        '''
+        script = self.scripts.get(p2shAddress)
+        if script is None:
+            return None
+        fn = script.get('function', '')
+        params = script.get('original_params', {})
+        blocks = params.get('blocks')
+        minutes = params.get('minutes')
+        if fn == 'paymentChannel':
+            # CSV — relative timelock from confirmation
+            confirmedHeight = script.get('funding_confirmed_height')
+            if blocks is not None and confirmedHeight is not None:
+                return {
+                    'type': 'csv',
+                    'unit': 'blocks',
+                    'recall_block': confirmedHeight + blocks,
+                    'recall_time': None}
+            if minutes is not None:
+                confirmedAt = script.get('funding_confirmed_at')
+                if confirmedAt is not None:
+                    if isinstance(confirmedAt, str):
+                        confirmedAt = dt.datetime.fromisoformat(
+                            confirmedAt.replace('Z', '+00:00'))
+                    return {
+                        'type': 'csv',
+                        'unit': 'time',
+                        'recall_block': None,
+                        'recall_time': confirmedAt + dt.timedelta(minutes=minutes)}
+            return {'type': 'csv', 'unit': 'blocks' if blocks else 'time',
+                    'recall_block': None, 'recall_time': None}
+        if fn == 'paymentChannelExpiring':
+            # CLTV — absolute timelock
+            if blocks is not None:
+                return {
+                    'type': 'cltv',
+                    'unit': 'blocks',
+                    'recall_block': blocks,
+                    'recall_time': None}
+            # timestamp was computed from minutes at creation time and stored
+            # in the redeem script. We can recover it from original_params.
+            if minutes is not None:
+                createdAt = script.get('created_at')
+                if createdAt is not None:
+                    if isinstance(createdAt, str):
+                        createdAt = dt.datetime.fromisoformat(
+                            createdAt.replace('Z', '+00:00'))
+                    return {
+                        'type': 'cltv',
+                        'unit': 'time',
+                        'recall_block': None,
+                        'recall_time': createdAt + dt.timedelta(minutes=minutes)}
+            return {'type': 'cltv', 'unit': 'blocks' if blocks else 'time',
+                    'recall_block': None, 'recall_time': None}
+        return None
+
+    def isRecallAvailable(
+        self,
+        p2shAddress: str,
+        currentHeight: Union[int, None] = None,
+        currentTime: Union[dt.datetime, None] = None,
+    ) -> bool:
+        ''' check if the sender recall path is spendable for a script '''
+        info = self.getScriptTimelockInfo(p2shAddress)
+        if info is None:
+            return False
+        recallBlock = info.get('recall_block')
+        recallTime = info.get('recall_time')
+        if recallBlock is not None and currentHeight is not None:
+            return currentHeight >= recallBlock
+        if recallTime is not None:
+            now = currentTime or dt.datetime.now(dt.timezone.utc)
+            return now >= recallTime
+        return False
+
     ### Electrumx ##############################################################
 
     def connected(self) -> bool:
@@ -439,12 +521,18 @@ class Wallet(WalletBase):
             return
         fundingTxid = script.get('funding_txid')
         fundingVout = script.get('funding_vout')
-        fundingUtxoExists = any(
-            u.get('tx_hash') == fundingTxid and u.get('tx_pos') == fundingVout
-            for u in unspents)
-        if fundingUtxoExists:
+        fundingUtxo = next((
+            u for u in unspents
+            if u.get('tx_hash') == fundingTxid
+            and u.get('tx_pos') == fundingVout), None)
+        if fundingUtxo is not None:
             if oldStatus == 'funded':
                 script['status'] = 'active'
+                height = fundingUtxo.get('height')
+                if height and height > 0:
+                    script['funding_confirmed_height'] = height
+                    script['funding_confirmed_at'] = (
+                        dt.datetime.utcnow().isoformat() + 'Z')
         else:
             script['status'] = 'spent'
         newStatus = script.get('status')
