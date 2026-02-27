@@ -185,7 +185,17 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
 - [x] Step 5c: Update evrmore/__init__.py — DONE
 - [x] Step 5d: Add thunder channel methods to evrmore/wallet.py — DONE
 - [x] Step 5e: Add p2sh methods to base wallet/wallet.py — DONE
-- [ ] Step 5f: Add signForPubkey() to sign.py
+- [x] Step 5f: Add signForPubkey() to sign.py — ALREADY DONE (exists in utils/sign.py, all callers import from there)
+- [x] Step 6a: Port TxUtils fee utilities to utils/transaction.py — DONE (feeRate, defaultFee, getTxSize, getTxFee)
+- [x] Step 6b: Delete junk file evrmore/from satorilib.py — DONE
+- [x] Step 6c: Fix b2x → b2lx in evrmore/wallet.py _createTransaction() — DONE
+- [x] Step 6d: Port recursive fee correction to p2pkh transaction methods — DONE
+  - `satoriDistribution`: feeOverride param added, no recursion (matches toolkit where recursion is commented out)
+  - `currencyTransaction`: full recursion + broadcast toggle
+  - `satoriTransaction`: full recursion
+  - `satoriAndCurrencyTransaction`: full recursion
+  - `sendAllTransaction`: full recursion, fixed toolkit bug (toolkit compares feeOverride which is None on first call)
+- [x] Step 6e: Update all _compileCurrencyOutputs callers to keyword args — DONE (~11 call sites)
 
 ---
 
