@@ -415,7 +415,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
     ) -> CMutableTransaction:
         tx = CMutableTransaction(txins, txouts)
         for i, (txin, txinScriptPubKey) in enumerate(zip(txins, txinScripts)):
-            utxo_key = f"{b2x(txin.prevout.hash)}:{txin.prevout.n}"
+            utxo_key = f"{b2lx(txin.prevout.hash)}:{txin.prevout.n}"
             redeem_script = redeem_scripts.get(utxo_key) if redeem_scripts else None
             other_sigs = signatures.get(utxo_key) if signatures else None
             self._signInput(

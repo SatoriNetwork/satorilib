@@ -1767,14 +1767,15 @@ class Wallet(WalletBase):
 
     def satoriDistribution(
         self,
-        amountByAddress: dict[str: float],
+        amountByAddress: dict[str, float],
         memo: str=None,
         broadcast: bool = True,
+        feeOverride: Optional[int] = None,
     ) -> str:
         ''' creates a transaction with multiple SATORI asset recipients '''
         if len(amountByAddress) == 0 or len(amountByAddress) > 1000:
             raise TransactionFailure('too many or too few recipients')
-        satsByAddress: dict[str: int] = {}
+        satsByAddress: dict[str, int] = {}
         for address, amount in amountByAddress.items():
             if (
                 amount <= 0 or
@@ -1799,6 +1800,7 @@ class Wallet(WalletBase):
         (
             gatheredCurrencyUnspents,
             gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=feeOverride,
                 inputCount=len(gatheredSatoriUnspents),
                 outputCount=len(satsByAddress) + 2 + memoCount)
         txins, txinScripts = self._compileInputs(
@@ -1808,10 +1810,12 @@ class Wallet(WalletBase):
         satoriChangeOut = self._compileSatoriChangeOutput(
             satoriSats=satoriSats,
             gatheredSatoriSats=gatheredSatoriSats)
-        currencyChangeOut = self._compileCurrencyChangeOutput(
-            gatheredCurrencySats=gatheredCurrencySats,
+        fee = feeOverride or TxUtils.estimatedFee(
             inputCount=len(txins),
             outputCount=len(satsByAddress) + 2 + memoCount)  # satoriChange, currencyChange, memo
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
         memoOut = None
         if memo is not None:
             memoOut = self._compileMemoOutput(memo)
@@ -1826,9 +1830,14 @@ class Wallet(WalletBase):
         return self._txToHex(tx)
 
     # for neuron
-    def currencyTransaction(self, amount: float, address: str):
+    def currencyTransaction(
+        self,
+        amount: float,
+        address: str,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ):
         ''' creates a transaction to just send rvn '''
-        ''' unused, untested '''
         if (
             amount <= 0 or
             # not TxUtils.isAmountDivisibilityValid(
@@ -1843,27 +1852,39 @@ class Wallet(WalletBase):
         (
             gatheredCurrencyUnspents,
             gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=feeOverride,
                 sats=currencySats,
                 inputCount=0,
                 outputCount=1)
         txins, txinScripts = self._compileInputs(
             gatheredCurrencyUnspents=gatheredCurrencyUnspents)
         currencyOuts = self._compileCurrencyOutputs(address=address, sats=currencySats)
+        fee = feeOverride or TxUtils.estimatedFee(
+            inputCount=len(txins),
+            outputCount=2)
         currencyChangeOut = self._compileCurrencyChangeOutput(
             currencySats=currencySats,
             gatheredCurrencySats=gatheredCurrencySats,
-            inputCount=len(txins),
-            outputCount=2)
+            fee=fee)
         tx = self._createTransaction(
             txins=txins,
             txinScripts=txinScripts,
             txouts=currencyOuts + [
                 x for x in [currencyChangeOut]
                 if x is not None])
-        return self.broadcast(self._txToHex(tx))
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            if broadcast:
+                return self.broadcast(self._txToHex(tx))
+            return self._txToHex(tx)
+        return self.currencyTransaction(
+            amount=amount,
+            address=address,
+            feeOverride=requiredFee)
 
     # for neuron
-    def satoriTransaction(self, amount: float, address: str):
+    def satoriTransaction(self, amount: float, address: str, feeOverride: Optional[int] = None):
         ''' creates a transaction to send satori to one address '''
         if (
             amount <= 0 or
@@ -1883,6 +1904,7 @@ class Wallet(WalletBase):
         (
             gatheredCurrencyUnspents,
             gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=feeOverride,
                 inputCount=len(gatheredSatoriUnspents),
                 outputCount=3)
         txins, txinScripts = self._compileInputs(
@@ -1892,21 +1914,35 @@ class Wallet(WalletBase):
         satoriChangeOut = self._compileSatoriChangeOutput(
             satoriSats=satoriSats,
             gatheredSatoriSats=gatheredSatoriSats)
-        currencyChangeOut = self._compileCurrencyChangeOutput(
-            gatheredCurrencySats=gatheredCurrencySats,
+        fee = feeOverride or TxUtils.estimatedFee(
             inputCount=len(txins),
             outputCount=3)
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
         tx = self._createTransaction(
             txins=txins,
             txinScripts=txinScripts,
             txouts=satoriOuts + [
                 x for x in [satoriChangeOut, currencyChangeOut]
                 if x is not None])
-        return self.broadcast(self._txToHex(tx))
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            return self.broadcast(self._txToHex(tx))
+        return self.satoriTransaction(
+            amount=amount,
+            address=address,
+            feeOverride=requiredFee)
 
-    def satoriAndCurrencyTransaction(self, satoriAmount: float, currencyAmount: float, address: str):
+    def satoriAndCurrencyTransaction(
+        self,
+        satoriAmount: float,
+        currencyAmount: float,
+        address: str,
+        feeOverride: Optional[int] = None,
+    ):
         ''' creates a transaction to send satori and currency to one address '''
-        ''' unused, untested '''
         if (
             satoriAmount <= 0 or
             currencyAmount <= 0 or
@@ -1931,6 +1967,7 @@ class Wallet(WalletBase):
         (
             gatheredCurrencyUnspents,
             gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=feeOverride,
                 sats=currencySats,
                 inputCount=len(gatheredSatoriUnspents),
                 outputCount=4)
@@ -1942,13 +1979,15 @@ class Wallet(WalletBase):
         satoriChangeOut = self._compileSatoriChangeOutput(
             satoriSats=satoriSats,
             gatheredSatoriSats=gatheredSatoriSats)
-        currencyChangeOut = self._compileCurrencyChangeOutput(
-            currencySats=currencySats,
-            gatheredCurrencySats=gatheredCurrencySats,
+        fee = feeOverride or TxUtils.estimatedFee(
             inputCount=(
                 len(gatheredSatoriUnspents) +
                 len(gatheredCurrencyUnspents)),
             outputCount=4)
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            currencySats=currencySats,
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
         tx = self._createTransaction(
             txins=txins,
             txinScripts=txinScripts,
@@ -1956,7 +1995,15 @@ class Wallet(WalletBase):
                 satoriOuts + currencyOuts + [
                     x for x in [satoriChangeOut, currencyChangeOut]
                     if x is not None]))
-        return self.broadcast(self._txToHex(tx))
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            return self.broadcast(self._txToHex(tx))
+        return self.satoriAndCurrencyTransaction(
+            satoriAmount=satoriAmount,
+            currencyAmount=currencyAmount,
+            address=address,
+            feeOverride=requiredFee)
 
     # def satoriOnlyPartial(self, amount: int, address: str, pullFeeFromAmount: bool = False) -> str:
     #    '''
@@ -2370,7 +2417,11 @@ class Wallet(WalletBase):
             return txHex
         return self.broadcast(txHex)
 
-    def sendAllTransaction(self, address: str) -> str:
+    def sendAllTransaction(
+        self,
+        address: str,
+        feeOverride: Optional[int] = None,
+    ) -> str:
         '''
         sweeps all Satori and currency to the address. so it has to take the fee
         out of whatever is in the wallet rather than tacking it on at the end.
@@ -2396,11 +2447,12 @@ class Wallet(WalletBase):
             txins, txinScripts = self._compileInputs(
                 gatheredCurrencyUnspents=gatheredCurrencyUnspents)
         # determin how much currency to send: take out fee
-        currencySatsLessFee = currencySats - TxUtils.estimatedFee(
+        fee = feeOverride or TxUtils.estimatedFee(
             inputCount=(
                 len(gatheredSatoriUnspents) +
                 len(gatheredCurrencyUnspents)),
             outputCount=2)
+        currencySatsLessFee = currencySats - fee
         if currencySatsLessFee < 0:
             raise TransactionFailure('tx: not enough currency to send')
         # since it's a send all, there's no change outputs
@@ -2419,7 +2471,13 @@ class Wallet(WalletBase):
             txins=txins,
             txinScripts=txinScripts,
             txouts=txouts)
-        return self.broadcast(self._txToHex(tx))
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            return self.broadcast(self._txToHex(tx))
+        return self.sendAllTransaction(
+            address=address,
+            feeOverride=requiredFee)
 
     # not finished
     # I thought this would be worth it, but
