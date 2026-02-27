@@ -1,4 +1,6 @@
-from typing import Union, Callable, Dict
+from functools import partial
+from typing import Any, Union, Callable, Dict, Optional
+import time
 import datetime as dt
 from evrmore import SelectParams
 from evrmore.wallet import P2PKHEvrmoreAddress, CEvrmoreAddress, CEvrmoreSecret, P2SHEvrmoreAddress
@@ -7,17 +9,17 @@ from evrmore.core.script import (
     CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL, 
     OP_EVR_ASSET, OP_DROP, OP_RETURN, SIGHASH_ANYONECANPAY, OP_IF, OP_ELSE, OP_ENDIF, 
     OP_CHECKMULTISIG, OP_CHECKLOCKTIMEVERIFY, OP_CHECKSEQUENCEVERIFY)
-from evrmore.core import b2x, lx, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
+from evrmore.core import b2lx, b2x, lx, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
 from evrmore.core.scripteval import EvalScriptError
 from satorilib import logging
 from satorilib.electrumx import Electrumx
 from satorilib.wallet.concepts.transaction import AssetTransaction, TransactionFailure
 from satorilib.wallet.utils.transaction import TxUtils
+from satorilib.wallet.utils.validate import Validate
 from satorilib.wallet.wallet import Wallet
 from satorilib.wallet.evrmore.sign import signMessage
 from satorilib.wallet.evrmore.verify import verify
 from satorilib.wallet.evrmore.valid import isValidEvrmoreAddress
-from satorilib.wallet.evrmore.scripts import P2SHRedeemScripts
 from satorilib.wallet.identity import Identity
 from satorilib.wallet.evrmore.identity import EvrmoreIdentity
 from satorilib.wallet.rpc_methods import RpcMethodsMixin
@@ -89,7 +91,6 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             skipSave=skipSave,
             pullFullTransactions=pullFullTransactions,
             balanceUpdatedCallback=balanceUpdatedCallback)
-        self.scripts = P2SHRedeemScripts()
 
         # Initialize RPC client if config provided
         self._initRpcClient(
@@ -337,13 +338,14 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         self,
         satoriSats: int = 0,
         gatheredSatoriSats: int = 0,
+        changeAddress: Optional[str] = None,
     ) -> Union[CMutableTxOut, None]:
         satoriChange = gatheredSatoriSats - satoriSats
         if satoriChange > 0:
             return CMutableTxOut(
                 0,
                 CScript([
-                    *CEvrmoreAddress(self.address).to_scriptPubKey(),
+                    *CEvrmoreAddress(changeAddress or self.address).to_scriptPubKey(),
                     OP_EVR_ASSET,
                     bytes.fromhex(
                         AssetTransaction.satoriHex(self.symbol) +
@@ -360,12 +362,15 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         gatheredCurrencySats: int = 0,
         inputCount: int = 0,
         outputCount: int = 0,
+        fee: int = 0,
         scriptPubKey: CScript = None,
         returnSats: bool = False,
+        changeAddress: Optional[str] = None,
     ) -> Union[CMutableTxOut, None, tuple[CMutableTxOut, int]]:
-        currencyChange = gatheredCurrencySats - currencySats - TxUtils.estimatedFee(
-            inputCount=inputCount,
-            outputCount=outputCount)
+        currencyChange = gatheredCurrencySats - currencySats - (
+            fee or TxUtils.estimatedFee(
+                inputCount=inputCount,
+                outputCount=outputCount))
         if currencyChange > 0:
             if str(CEvrmoreAddress(self.address)) != self.address:
                 raise TransactionFailure('tx: address mismatch')
@@ -376,7 +381,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 raise TransactionFailure('tx: scriptPubKey mismatch')
             txout = CMutableTxOut(
                 currencyChange,
-                scriptPubKey or CEvrmoreAddress(self.address).to_scriptPubKey()) # self._addressObj.to_scriptPubKey())
+                scriptPubKey or CEvrmoreAddress(changeAddress or self.address).to_scriptPubKey()) # self._addressObj.to_scriptPubKey())
             # use *CEvrmoreAddress(self.address).to_scriptPubKey()? # supports P2SH automatically
             if returnSats:
                 return txout, currencyChange
@@ -543,375 +548,842 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
     def _deserialize(self, serialTx: bytes) -> CMutableTransaction:
         return CMutableTransaction.deserialize(serialTx)
 
-    def createP2SHTransaction(
-        self,
-        outputs: list[tuple[str, float]],  # List of (address, amount) tuples
-        redeem_scripts: dict[str, CScript],  # Map of tx_hash:pos to redeem script
-        utxos: list = None,  # Optional list of UTXOs to use
-        signatures: dict[str, list[bytes]] = None,  # Optional map of tx_hash:pos to list of signatures
-        memo: str = None,
-    ) -> str:
-        """Create and sign a P2SH transaction.
+    ### p2sh infrastructure ################################################################
 
-        *** NOTE ***
-            this is unused, it's an example, and it doesn't handle fees or change correctly so don't use it.
-        
-        Args:
-            outputs: List of (address, amount) tuples for the outputs
-            redeem_scripts: Map of tx_hash:pos to redeem script for each P2SH input
-            utxos: Optional list of UTXOs to use. If not provided, will select from available UTXOs
-            signatures: Optional map of tx_hash:pos to list of signatures for multi-sig inputs
-            memo: Optional memo to include in the transaction
-            
-        Returns:
-            Hex string of the signed transaction
-        """
-        # Gather UTXOs if not provided
-        utxos = utxos or self.gatherUnspents()
-            
-        # Compile inputs
+    @staticmethod
+    def _cltvNumberFrom(dtOrInt: Union[dt.datetime, int]) -> int:
+        if isinstance(dtOrInt, int):
+            # block height or unix ts (caller ensures correct type)
+            return dtOrInt
+        if isinstance(dtOrInt, dt.datetime):
+            d = dtOrInt if dtOrInt.tzinfo else dtOrInt.replace(tzinfo=dt.timezone.utc)
+            ts = int(d.astimezone(dt.timezone.utc).timestamp())
+            # CLTV timestamp must be >= 500,000,000
+            if ts < 500_000_000:
+                raise ValueError("CLTV timestamp must be >= 500,000,000")
+            return ts
+        raise TypeError("redeemDates value must be datetime or int")
+
+    def _compileClaimOnP2SH(
+        self,
+        address: str,
+        redeemScript: bytes,
+        redeemParams: Callable,
+        currencySats: float=0,
+        satoriSats: float=0,
+        feeOverride: Optional[int] = None,
+        fundingTxId: str = None,
+        fundingVout: int = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+        date: Optional[dt.datetime] = None,
+        dates: Optional[list[dt.datetime]] = None,
+        extraVins: Optional[list[CMutableTxIn]] = None,
+        extraVinsTxinScripts: Optional[list[CScript]] = None,
+        extraVouts: Optional[list[CMutableTxOut]] = None,
+    ) -> CMutableTransaction:
+        ''' compile a claim transaction on a P2SH output '''
+        # support both single and multi-input forms
+        txIds = fundingTxIds or ([fundingTxId] if fundingTxId else [])
+        vouts = fundingVouts or ([fundingVout] if fundingVout is not None else [])
+        txins = [
+            CMutableTxIn(COutPoint(lx(txId), vout))
+            for txId, vout in zip(txIds, vouts)
+        ] + (extraVins or [])
+        txouts = (
+            self._compileCurrencyOutputs(currencySats - feeOverride, address)
+            if currencySats > 0 else []
+        ) + (
+            self._compileSatoriOutputs({address: satoriSats})
+            if satoriSats > 0 else []
+        ) + (extraVouts or [])
+        tx = CMutableTransaction(txins, txouts)
+        # handle dates (multi-input) or single date
+        dateList = dates or ([date] if date else [])
+        for i, d in enumerate(dateList):
+            if d:
+                lock = EvrmoreWallet._cltvNumberFrom(d)
+                if getattr(tx, "nLockTime", 0) < lock:
+                    tx.nLockTime = lock
+                if getattr(tx, "nVersion", 1) < 2: tx.nVersion = 2
+                tx.vin[i].nSequence = 0xFFFFFFFE
+        redeemCount = len(txIds)
+        for i in range(redeemCount):
+            sighash = SignatureHash(redeemScript, tx, i, SIGHASH_ALL)
+            sig = self.identity._privateKeyObj.sign(sighash) + bytes([SIGHASH_ALL])
+            tx.vin[i].scriptSig = redeemParams(sig=sig) + redeemScript
+        for i, (txin, txinScriptPubKey) in enumerate(
+            zip(tx.vin, ([None] * redeemCount) + (extraVinsTxinScripts or []))
+        ):
+            if i < redeemCount:
+                continue
+            self._signInput(
+                tx=tx,
+                i=i,
+                txin=txin,
+                txinScriptPubKey=txinScriptPubKey,
+                sighashFlag=SIGHASH_ALL)
+        return tx
+
+    def _compileClaimOnP2SHMultiSigStart(
+        self,
+        toAddress: str,
+        currencySats: float=0,
+        satoriSats: float=0,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+        dates: Optional[list[dt.datetime]] = None,
+        extraVins: Optional[list[CMutableTxIn]] = None,
+        extraVouts: Optional[list[CMutableTxOut]] = None,
+    ) -> CMutableTransaction:
+        txins = [
+            CMutableTxIn(COutPoint(lx(fundingTxId), fundingVout))
+            for fundingTxId, fundingVout in zip(fundingTxIds, fundingVouts)
+            ] + (extraVins or [])
+        txouts = (
+            self._compileCurrencyOutputs(currencySats - feeOverride, toAddress)
+            if currencySats > 0 else []
+        ) + (
+            self._compileSatoriOutputs({toAddress: satoriSats})
+            if satoriSats > 0 else []
+        ) + (extraVouts or [])
+        tx = CMutableTransaction(txins, txouts)
+        for i, date in enumerate(dates or []):
+            if date:
+                lock = EvrmoreWallet._cltvNumberFrom(date)
+                if getattr(tx, "nLockTime", 0) < lock:
+                    tx.nLockTime = lock
+                if getattr(tx, "nVersion", 1) < 2: tx.nVersion = 2
+                tx.vin[i].nSequence = 0xFFFFFFFE
+        return tx
+
+    def _compileClaimOnP2SHMultiSigMiddle(
+        self,
+        tx: CMutableTransaction,
+        redeemScript: bytes,
+        vinIndex: int = 0,
+        sighashFlag: int = SIGHASH_ALL,
+    ) -> bytes:
+        ''' produces a signature for the input at vinIndex '''
+        sighash = SignatureHash(redeemScript, tx, vinIndex, sighashFlag)
+        sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
+        return sig
+
+    def _compileClaimOnP2SHMultiSigEnd(
+        self,
+        tx: CMutableTransaction,
+        redeemScript: bytes,
+        redeemParams: Callable,
+        redeemCount: int = 1,
+        extraVinsTxinScripts: Optional[list[CScript]] = None,
+    ) -> CMutableTransaction:
+        ''' assumption: txins[0..redeemCount-1] are the p2sh inputs '''
+        for i in range(redeemCount):
+            tx.vin[i].scriptSig = redeemParams() + redeemScript
+        for i, (txin, txinScriptPubKey) in enumerate(
+            zip(tx.vin, ([None] * redeemCount) + (extraVinsTxinScripts or []))
+        ):
+            if i < redeemCount:
+                continue
+            self._signInput(
+                tx=tx,
+                i=i,
+                txin=txin,
+                txinScriptPubKey=txinScriptPubKey,
+                sighashFlag=SIGHASH_ALL)
+        assert all(len(bytes(v.scriptSig)) > 0 for v in tx.vin), "unsigned input(s)"
+        return tx
+
+    ### p2sh - lock - thunder ################################################################
+
+    def produceThunderChannel(
+        self,
+        receiver: str,
+        sender: str=None,
+        blocks: int=None,
+        minutes: int=None,
+        memo: str=None,
+        amount: float=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+        isCurrency: bool = False,
+        isExpiring: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        ''' creates a transaction with multiple currency recipients '''
+        if isExpiring:
+            from satorilib.wallet.evrmore.scripts.channels.lock import thunderExpiring
+            thunderChannelFn = thunderExpiring
+        else:
+            from satorilib.wallet.evrmore.scripts.channels.lock import thunderChannel
+            thunderChannelFn = thunderChannel
+        from satorilib.wallet.evrmore.utils.multisig import MultisigUtils
+        sender = sender or self.pubkey
+        redeemScript = thunderChannelFn(
+            sender=sender,
+            receiver=receiver,
+            blocks=blocks,
+            minutes=minutes)
+        scriptPayload = {
+            'redeem_script': str(redeemScript),
+            'redeem_script_hex': redeemScript.hex(),
+            'redeem_script_size': len(redeemScript),
+            'p2sh_address': self.generateP2SHAddress(redeemScript),
+            'amount': amount,
+            'function': thunderChannelFn.__name__,
+            'funding_txid': None, # added during send
+            'funding_vout': None, # added during send
+            'currency_sats': None, # added during send
+            'satori_sats': None, # added during send
+            'original_params': {
+                'sender': sender,
+                'receiver': receiver,
+                'blocks': blocks,
+                'minutes': minutes,
+                'memo': memo,
+                'amount': amount,
+                'broadcast': broadcast,
+                'feeOverride': feeOverride}}
+        timestamp = str(time.time())
+        MultisigUtils.saveScripts(f'unsent_scripts-{timestamp}.json', [scriptPayload])
+        if isCurrency:
+            fn = self.produceThunderChannelCurrencyFromScript
+        else:
+            fn = self.produceThunderChannelFromScript
+        txhash, txid, scriptPayload = fn(
+            redeemScript=redeemScript,
+            scriptPayload=scriptPayload,
+            memo=memo,
+            broadcast=broadcast,
+            feeOverride=feeOverride)
+        if len(scriptPayload['funding_txid']) != 64:
+            logging.error(f'produceThunderChannel failed: funding_txid is not 64 characters, {txid}')
+        scriptPayload['funding_txhash'] = txhash
+        print('scriptPayload:', scriptPayload)
+        MultisigUtils.saveScripts(
+            f'scripts-{timestamp}-{str(time.time())}.json',
+            {scriptPayload["p2sh_address"]: scriptPayload})
+        return txid, scriptPayload
+
+    def produceThunderChannelCurrency(
+        self,
+        receiver: str,
+        sender: str=None,
+        blocks: int=None,
+        minutes: int=None,
+        memo: str=None,
+        amount: float=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        return self.produceThunderChannel(
+            receiver=receiver,
+            sender=sender,
+            blocks=blocks,
+            minutes=minutes,
+            memo=memo,
+            amount=amount,
+            broadcast=broadcast,
+            feeOverride=feeOverride,
+            isCurrency=True,
+            isExpiring=False)
+
+    def produceThunderExpiring(
+        self,
+        receiver: str,
+        sender: str=None,
+        blocks: int=None,
+        minutes: int=None,
+        memo: str=None,
+        amount: float=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        return self.produceThunderChannel(
+            receiver=receiver,
+            sender=sender,
+            blocks=blocks,
+            minutes=minutes,
+            memo=memo,
+            amount=amount,
+            broadcast=broadcast,
+            feeOverride=feeOverride,
+            isCurrency=False,
+            isExpiring=True)
+
+    def produceThunderExpiringCurrency(
+        self,
+        receiver: str,
+        sender: str=None,
+        blocks: int=None,
+        minutes: int=None,
+        memo: str=None,
+        amount: float=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        return self.produceThunderChannel(
+            receiver=receiver,
+            sender=sender,
+            blocks=blocks,
+            minutes=minutes,
+            memo=memo,
+            amount=amount,
+            broadcast=broadcast,
+            feeOverride=feeOverride,
+            isCurrency=True,
+            isExpiring=True)
+
+    def produceThunderChannelFromScript(
+        self,
+        redeemScript: bytes,
+        scriptPayload: dict[str, Any],
+        memo: str = None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, str, dict[str, dict]]:
+        '''
+        creates a transaction with multiple currency recipients
+        funding a thunder channel is pretty much a regular transaction
+        plus managment of extra p2sh details
+        '''
+        amount = scriptPayload['amount']
+        address = scriptPayload['p2sh_address']
+        if amount <= 0 or not Validate.address(address, self.symbol):
+            raise TransactionFailure('produceThunderChannel bad params')
+        assumedVout = 0
+        scriptPayload['funding_txid'] = None
+        scriptPayload['funding_vout'] = assumedVout
+        scriptPayload['satori_sats'] = TxUtils.roundSatsDownToDivisibility(
+            sats=TxUtils.asSats(amount),
+            divisibility=self.divisibility)
+        memoCount = 0
+        if memo is not None:
+            memoCount = 1
+        satoriSats = scriptPayload['satori_sats']
+        (
+            gatheredSatoriUnspents,
+            gatheredSatoriSats) = self._gatherSatoriUnspents(satoriSats)
+        (
+            gatheredCurrencyUnspents,
+            gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=feeOverride,
+                inputCount=len(gatheredSatoriUnspents),
+                outputCount=1 + 2 + memoCount)
         txins, txinScripts = self._compileInputs(
-            gatheredCurrencyUnspents=utxos,
-            redeem_scripts=redeem_scripts
-        )
-        
-        # Calculate total output amount
-        total_output = sum(amount for _, amount in outputs)
-        
-        # Compile outputs
-        txouts = []
-        for address, amount in outputs:
-            txouts.extend(self._compileCurrencyOutputs(
-                TxUtils.asSats(amount),
-                address
-            ))
-            
-        # Add memo output if provided
-        if memo:
-            memo_output = self._compileMemoOutput(memo)
-            if memo_output:
-                txouts.append(memo_output)
-                
-        # Create and sign transaction
+            gatheredCurrencyUnspents=gatheredCurrencyUnspents,
+            gatheredSatoriUnspents=gatheredSatoriUnspents)
+        satoriOuts = self._compileSatoriOutputs({address: satoriSats})
+        satoriChangeOut = self._compileSatoriChangeOutput(
+            satoriSats=satoriSats,
+            gatheredSatoriSats=gatheredSatoriSats)
+        fee = feeOverride or TxUtils.estimatedFee(
+            inputCount=len(txins),
+            outputCount=1 + 2 + memoCount)
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
+        memoOut = None
+        if memo is not None:
+            memoOut = self._compileMemoOutput(memo)
         tx = self._createTransaction(
             txins=txins,
             txinScripts=txinScripts,
-            txouts=txouts,
-            redeem_scripts=redeem_scripts,
-            signatures=signatures)
-        
-        raise Exception("this function is an example, and it doesn't handle fees or change correctly so don't use it.")
-    
-        return self._txToHex(tx)
+            txouts=satoriOuts + [
+                x for x in [satoriChangeOut, currencyChangeOut, memoOut]
+                if x is not None])
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            if broadcast:
+                funding_txid = self.broadcast(self._txToHex(tx))
+                scriptPayload['funding_txid'] = funding_txid
+                return self._txToHex(tx), funding_txid, scriptPayload
+            return self._txToHex(tx), '', scriptPayload
+        return self.produceThunderChannelFromScript(
+            redeemScript=redeemScript,
+            scriptPayload=scriptPayload,
+            memo=memo,
+            broadcast=broadcast,
+            feeOverride=requiredFee)
 
-
-    def p2shFlow(self):
-        '''
-        # Let's say we have 3 participants in a 2-of-3 multi-sig
-        from evrmore import CEvrmoreSecret  # For private keys
-        from evrmore.core import SignatureHash, SIGHASH_ALL
-
-        # Each participant has their own private/public key pair
-        privkey1 = CEvrmoreSecret.from_secret_bytes(b'participant1_secret', compressed=True)
-        privkey2 = CEvrmoreSecret.from_secret_bytes(b'participant2_secret', compressed=True)
-        privkey3 = CEvrmoreSecret.from_secret_bytes(b'participant3_secret', compressed=True)
-
-        pubkey1 = privkey1.pub
-        pubkey2 = privkey2.pub
-        pubkey3 = privkey3.pub
-
-        # Create the 2-of-3 redeem script
-        redeem_script = wallet.scripts.multiSig([pubkey1, pubkey2, pubkey3], 2)
-
-        # Create the P2SH address
-        p2sh_address = wallet.generateP2SHAddress(redeem_script)
-
-        # Later, when spending...
-        # First, create the transaction without signatures
-        tx = CMutableTransaction(txins, txouts)
-
-        # Each participant signs the transaction
-        # Participant 1 signs
-        sighash1 = SignatureHash(redeem_script, tx, 0, SIGHASH_ALL)
-        sig1 = privkey1.sign(sighash1) + bytes([SIGHASH_ALL])
-
-        # Participant 2 signs
-        sighash2 = SignatureHash(redeem_script, tx, 0, SIGHASH_ALL)
-        sig2 = privkey2.sign(sighash2) + bytes([SIGHASH_ALL])
-
-        # Now we have both signatures needed
-        signatures = {
-            'tx_hash:tx_pos': [sig1, sig2]  # These are the actual signatures from participants 1 and 2
-        }
-
-        # Create the final transaction with these signatures
-        tx_hex = wallet.createP2SHTransaction(
-            outputs=[(destination_address, amount)],
-            redeem_scripts={'tx_hash:tx_pos': redeem_script},
-            signatures=signatures
-        )    
-        '''
-        # example
-        #In a real-world scenario:
-        #Each participant would have their own wallet with their private key
-        #They would each sign the transaction independently
-        #The signatures would be shared between participants (often through some secure channel)
-        #Once you have enough signatures (2 in this case), you can broadcast the transaction
-        #The actual process might look more like this in practice:
-        '''
-        # Participant 1's wallet
-        def sign_transaction(tx_hex, redeem_script):
-            tx = CMutableTransaction.deserialize(bytes.fromhex(tx_hex))
-            sighash = SignatureHash(redeem_script, tx, 0, SIGHASH_ALL)
-            sig = my_privkey.sign(sighash) + bytes([SIGHASH_ALL])
-            return sig.hex()
-
-        # Participant 2's wallet
-        def sign_transaction(tx_hex, redeem_script):
-            # Same process, but with their private key
-            ...
-
-        # Coordinator's wallet
-        # 1. Create unsigned transaction
-        tx_hex = wallet.createP2SHTransaction(
-            outputs=[(destination_address, amount)],
-            redeem_scripts={'tx_hash:tx_pos': redeem_script},
-            signatures=None  # No signatures yet
-        )
-
-        # 2. Send tx_hex to participants
-        # 3. Collect signatures from participants
-        sig1_hex = participant1.sign_transaction(tx_hex, redeem_script)
-        sig2_hex = participant2.sign_transaction(tx_hex, redeem_script)
-
-        # 4. Create final transaction with signatures
-        signatures = {
-            'tx_hash:tx_pos': [
-                bytes.fromhex(sig1_hex),
-                bytes.fromhex(sig2_hex)
-            ]
-        }
-
-        final_tx_hex = wallet.createP2SHTransaction(
-            outputs=[(destination_address, amount)],
-            redeem_scripts={'tx_hash:tx_pos': redeem_script},
-            signatures=signatures
-        )
-        '''
-
-    # 1. redeem-script generator  ───────────────────────────────────────────────────
-    # see self.scripts
-    
-    # 2. funding (opens the channel)  ───────────────────────────────────────────────
-    def generatePaymentChannel(
-        self, 
-        redeemScript: CScript,
-        amount: float, 
-    ) -> tuple[CScript, str, str]:
-        """
-        
-        Returns (redeem_script, p2sh_address, funding_tx_hex)
-
-        Example Usage:
-        ```
-        redeem_script, p2sh_address, funding_tx_hex = wallet.generatePaymentChannel(
-            amount=24,
-            redeemScript=wallet.scripts.renewable_light_channel(
-                sender=wallet.publicKeyBytes,
-                receiver=other.pubkey,
-                blocks=60*60*24))
-        tx = wallet.broadcast(funding_tx_hex)
-        reported = wallet.thunder.reportChannelOpened(
-            sender=wallet.address,
-            receiver=other.address,
-            redeem=redeem_script,
-            address=p2sh_address,
-            fundingTx=funding_tx_hex,
-            tx=tx)
-        wallet.remember(reported)
-        ```
-        """
-        sats = TxUtils.asSats(amount)
-        p2shAddress = self.generateP2SHAddress(redeemScript)
-
-        # choose inputs
-        if utxos is None:
-            utxos = self.gatherUnspents()
-        txins, txinScripts = self._compileInputs(gatheredCurrencyUnspents=utxos)
-        # output = lock <amount_sats> into channel P2SH
-        txouts = [CMutableTxOut(sats, CEvrmoreAddress(p2shAddress).to_scriptPubKey())]
-
-        # add change + fee optimisation as usual
-        change = self._compileCurrencyChangeOutput(
-            currencySats=sats,
-            gatheredCurrencySats=sum(u['value'] for u in utxos),
+    def produceThunderChannelCurrencyFromScript(
+        self,
+        script: dict,
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, str, dict]:
+        ''' creates a transaction with multiple currency recipients '''
+        amount = script['amount']
+        address = script['p2sh_address']
+        if amount <= 0 or not Validate.address(address, self.symbol):
+            raise TransactionFailure('produceThunderChannelCurrency bad params')
+        assumedVout = 0
+        script['funding_txid'] = None
+        script['funding_vout'] = assumedVout
+        script['currency_sats'] = TxUtils.roundSatsDownToDivisibility(
+            sats=TxUtils.asSats(amount),
+            divisibility=self.divisibility)
+        memoCount = 0
+        if memo is not None:
+            memoCount = 1
+        (
+            gatheredCurrencyUnspents,
+            gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=feeOverride,
+                sats=script['currency_sats'],
+                inputCount=len(gatheredCurrencyUnspents),
+                outputCount=1 + 1 + memoCount)
+        txins, txinScripts = self._compileInputs(
+            gatheredCurrencyUnspents=gatheredCurrencyUnspents)
+        currencyOuts = self._compileCurrencyOutputs(script['currency_sats'], address)
+        fee = feeOverride or TxUtils.estimatedFee(
             inputCount=len(txins),
-            outputCount=len(txouts))
-        
-        if change:
-            txouts.append(change)
+            outputCount=1 + 1 + memoCount)
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            currencySats=script['currency_sats'],
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
+        memoOut = None
+        if memo is not None:
+            memoOut = self._compileMemoOutput(memo)
+        tx = self._createTransaction(
+            txins=txins,
+            txinScripts=txinScripts,
+            txouts=currencyOuts + [
+                x for x in [currencyChangeOut, memoOut]
+                if x is not None])
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            if broadcast:
+                funding_txid = self.broadcast(self._txToHex(tx))
+                script['funding_txid'] = funding_txid
+                return self._txToHex(tx), funding_txid, script
+            return self._txToHex(tx), '', script
+        return self.produceThunderChannelCurrencyFromScript(
+            script=script,
+            memo=memo,
+            broadcast=broadcast,
+            feeOverride=requiredFee)
 
-        tx = self._createTransaction(txins, txinScripts, txouts)
-        return redeemScript, p2shAddress, self._txToHex(tx)
+    def produceThunderExpiringFromScript(
+        self,
+        script: dict,
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, str, dict]:
+        ''' alias for produceThunderChannelFromScript '''
+        return self.produceThunderChannelFromScript(
+            script=script,
+            memo=memo,
+            broadcast=broadcast,
+            feeOverride=feeOverride)
 
+    def produceThunderExpiringCurrencyFromScript(
+        self,
+        script: dict,
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+    ) -> tuple[str, str, dict]:
+        ''' alias for produceThunderChannelCurrencyFromScript '''
+        return self.produceThunderChannelCurrencyFromScript(
+            script=script,
+            memo=memo,
+            broadcast=broadcast,
+            feeOverride=feeOverride)
 
-    # 3. Alice creates a one-sig "commitment" tx  ───────────────────────────────────
-    def generateCommitmentTx(
-        self, 
-        funding_txid: str, 
-        vout: int,
-        funding_value: int,
-        redeem_script: CScript,
-        pay_to_receiver_sats: int, 
-        receiver_addr: str,
-        tx_fee_sats: int = 12000,  # Default fee of 0.00012 EVR (12000 satoshis)
-        dust_threshold_multiple: int = 3,  # Multiple of tx fee considered dust
-        respect_dust_zone: bool = True,
-        #p2sh_addr: str = None, 
-    ) -> str:
-        """
-        Creates a commitment transaction for a payment channel where:
-        - A portion of the funds (pay_to_receiver_sats) is sent to the receiver
-        - The remainder may stay locked in the payment channel based on amount
-        - Transaction fees are handled according to the following logic:
-          1. If remainder is zero (sending everything) - take fee from receiver amount
-          2. If remainder is dust (< 2x tx fee) - send everything to receiver minus fee
-          3. If remainder is significant - take fee from the remainder
+    ### p2sh - unlock - thunder ################################################################
 
-        Args:
-            funding_txid: Transaction ID of the funding transaction
-            vout: Output index in the funding transaction
-            funding_value: Total value of the funding output in satoshis
-            redeem_script: The redeem script for the payment channel
-            pay_to_receiver_sats: Amount to pay to the receiver in satoshis (before fee adjustment)
-            receiver_addr: Address of the receiver
-            tx_fee_sats: Transaction fee in satoshis
-            dust_threshold_multiple: Multiple of tx fee below which change is considered dust
-            respect_dust_zone: If true the transaction will fail to create when 0 < change < result of dust_threshold_multiple 
-            p2sh_addr: Optional payment channel address, calculated from redeem_script if not provided
-            
-        Returns:
-            Hex of partially-signed transaction (Alice's sig only)
-        """
-        # Validate the transaction fee
-        if tx_fee_sats <= 0:
-            raise ValueError("Transaction fee must be positive")
-        
-        # Validate the payment amount
-        if not 0 < pay_to_receiver_sats <= funding_value:
-            raise ValueError("Payment amount must be positive and not exceed the funding value")
-        
-        # Calculate the potential remainder (before considering fees)
-        remainder = funding_value - pay_to_receiver_sats
-        
-        # Define dust threshold (e.g., 3x transaction fee) 
-        # assumes 1 input 1 outputs is total fee for typical tx
-        dust_threshold = (tx_fee_sats * 3) * dust_threshold_multiple 
-        
-        # Create the input that spends from the funding transaction
-        txin = CMutableTxIn(COutPoint(lx(funding_txid), vout))
-        
-        # Get or calculate the P2SH address from the redeem script
-        #p2sh_addr = p2sh_addr or self.generateP2SHAddress(redeem_script)
-        
-        # Get the scriptPubKey for the P2SH address
-        script_pub = P2SHEvrmoreAddress.from_redeemScript(redeem_script).to_scriptPubKey()
+    def thunderChannelTransaction(
+        self,
+        toAddress: str,
+        lockedAmounts: list[float],
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+        redeemScript: bytes = None, #'CScript'
+        timedRelease: bool = True,
+        date: Optional[dt.datetime] = None,
+        changeAddress: str = None,
+        multisigMap: Optional[dict[str, bytes]] = None, # ordered pubkeys: signatures
+    ) -> tuple[str, dict[str, int]]:
+        ''' claim locked tokens '''
+        if (
+            sum(lockedAmounts) <= 0 or
+            not Validate.address(toAddress, self.symbol)
+        ):
+            raise TransactionFailure('SimpleTimeReleaseCurrencyTransaction bad params')
+        if multisigMap is None:
+            return self.thunderChannelRecallTransaction(
+                toAddress=toAddress,
+                lockedAmounts=lockedAmounts,
+                memo=memo,
+                broadcast=broadcast,
+                feeOverride=feeOverride,
+                fundingTxIds=fundingTxIds,
+                fundingVouts=fundingVouts,
+                redeemScript=redeemScript,
+                timedRelease=timedRelease,
+                date=date)
+        return self.thunderChannelMultisigTransactionStart(
+                toAddress=toAddress,
+                changeAddress=changeAddress,
+                lockedAmounts=lockedAmounts,
+                memo=memo,
+                feeOverride=feeOverride,
+                fundingTxIds=fundingTxIds,
+                fundingVouts=fundingVouts,
+                date=date)
 
-        # Create outputs based on the different cases
-        txouts = []
-        
-        # Case 1 & 2 & 3: No remainder or remainder is dust - send everything to receiver minus fee
-        if remainder  == 0 or remainder < dust_threshold:
-            if remainder > 0 and respect_dust_zone:
-                raise ValueError(f"In Dust Zone.")
+    def thunderChannelRecallTransaction(
+        self,
+        toAddress: str,
+        lockedAmounts: list[float],
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+        redeemScript: bytes = None, #'CScript'
+        timedRelease: int = 3,
+        date: Optional[dt.datetime] = None,
+    ) -> tuple[str, dict[str, int]]:
+        '''
+        claim locked tokens
+        note:
+            rather than tracking txids and vouts manually,
+            use electrumx and derive the dates from the
+            tx date + redeemscript locktime
+        '''
+        from satorilib.wallet.evrmore.scripts.mining import unlock
+        lockedAmount = sum(lockedAmounts)
+        redeemParams = partial(
+            unlock.multiTimeMultisig,
+            timedRelease=timedRelease)
+        satoriSats = TxUtils.roundSatsDownToDivisibility(
+            sats=TxUtils.asSats(lockedAmount),
+            divisibility=self.divisibility)
+        fee = feeOverride or TxUtils.defaultFee
+        (
+            gatheredCurrencyUnspents,
+            gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=fee)
+        txins, txinScripts = self._compileInputs(
+            gatheredCurrencyUnspents=gatheredCurrencyUnspents)
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
+        memoOut = self._compileMemoOutput(memo)
+        tx = self._compileClaimOnP2SH(
+            redeemScript=redeemScript,
+            redeemParams=redeemParams,
+            address=toAddress,
+            satoriSats=satoriSats,
+            feeOverride=fee,
+            fundingTxIds=fundingTxIds,
+            fundingVouts=fundingVouts,
+            date=date,
+            extraVins=txins,
+            extraVinsTxinScripts=txinScripts,
+            extraVouts=([currencyChangeOut] if currencyChangeOut else []) + ([memoOut] if memoOut else []))
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            if broadcast:
+                return self.broadcast(self._txToHex(tx))
+            return tx.serialize().hex()
+        return self.thunderChannelRecallTransaction(
+            toAddress=toAddress,
+            lockedAmounts=lockedAmounts,
+            memo=memo,
+            broadcast=broadcast,
+            fundingTxIds=fundingTxIds,
+            fundingVouts=fundingVouts,
+            redeemScript=redeemScript,
+            timedRelease=timedRelease,
+            date=date,
+            feeOverride=requiredFee)
 
-            # in this case we have 1 input and 1 output
-            tx_fee_sats = tx_fee_sats * 2
+    def thunderChannelMultisigTransactionStart(
+        self,
+        toAddress: str,
+        changeAddress: str,
+        lockedAmounts: list[float],
+        sendAmount: float,
+        memo: str=None,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+    ) -> tuple[str, dict[str, int]]:
+        '''
+        issue locked tokens from the channel to the receiver
+        handle change back to the channel
+        possible simplification: always consume everything in the channel
+        possible optimization: consume only what is needed, started with the most recent.
+        '''
+        lockedAmount = sum(lockedAmounts)
+        if lockedAmount < sendAmount:
+            raise TransactionFailure('sendAmount is greater than lockedAmount')
+        satoriSats = TxUtils.roundSatsDownToDivisibility(
+            sats=TxUtils.asSats(sendAmount),
+            divisibility=self.divisibility)
+        fee = feeOverride or TxUtils.defaultFee*4
+        (
+            gatheredCurrencyUnspents,
+            gatheredCurrencySats) = self._gatherCurrencyUnspents(
+                feeOverride=fee)
+        txins, txinScripts = self._compileInputs(
+            gatheredCurrencyUnspents=gatheredCurrencyUnspents)
+        satoriChangeOut = self._compileSatoriChangeOutput(
+            changeAddress=changeAddress,
+            satoriSats=satoriSats,
+            gatheredSatoriSats=lockedAmount)
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            gatheredCurrencySats=gatheredCurrencySats,
+            fee=fee)
+        memoOut = self._compileMemoOutput(memo)
+        tx = self._compileClaimOnP2SHMultiSigStart(
+            toAddress=toAddress,
+            satoriSats=satoriSats,
+            feeOverride=fee,
+            fundingTxIds=fundingTxIds,
+            fundingVouts=fundingVouts,
+            extraVins=txins,
+            extraVouts=(
+                [currencyChangeOut] if currencyChangeOut else []
+            ) + (
+                [satoriChangeOut] if satoriChangeOut else []
+            ) + (
+                [memoOut] if memoOut else []))
+        return tx, txinScripts
 
-            # Send everything to receiver minus fee
-            actual_receiver_amount = funding_value - tx_fee_sats
-            
-            if actual_receiver_amount <= 0:
-                raise ValueError(f"Fee ({tx_fee_sats} sats) exceeds available funds ({funding_value} sats)")
-            
-            txouts.append(CMutableTxOut(
-                actual_receiver_amount,
-                CEvrmoreAddress(receiver_addr).to_scriptPubKey()
-            ))
-        
-        # Case 4: Remainder is significant - take fee from remainder
-        else:
-            # in this case we have 1 input and 2 output
-            tx_fee_sats = tx_fee_sats * 3
+    def thunderChannelMultisigTransactionMiddle(
+        self,
+        tx: bytes = None, # CMutableTransaction
+        redeemScript: bytes = None, # 'CScript'
+        vinIndex: int = 0,
+        sighashFlag: int = None,
+    ) -> bytes:
+        ''' create a signature for the input at vinIndex '''
+        return self._compileClaimOnP2SHMultiSigMiddle(
+            tx=tx,
+            redeemScript=redeemScript,
+            vinIndex=vinIndex,
+            **({sighashFlag: sighashFlag} if sighashFlag else {}))
 
-            # Receiver gets exactly what was specified
-            txouts.append(CMutableTxOut(
-                pay_to_receiver_sats,
-                CEvrmoreAddress(receiver_addr).to_scriptPubKey()
-            ))
-            
-            # Channel gets remainder minus fee
-            change_amount = remainder - tx_fee_sats
-            
-            if change_amount <= 0:
-                raise ValueError(f"Fee ({tx_fee_sats} sats) exceeds remainder ({remainder} sats)")
-            
-            txouts.append(CMutableTxOut(
-                change_amount,
-                script_pub  # Using same P2SH address for the remainder
-            ))
+    def thunderChannelMultisigTransactionEnd(
+        self,
+        tx: bytes, # CMutableTransaction
+        signatures: list[bytes],
+        extraVinsTxinScripts: Optional[list[bytes]] = None,
+        broadcast: bool = True,
+        feeOverride: int = 93500,
+        redeemScript: bytes = None, #'CScript'
+        timedRelease: bool = True,
+    ) -> tuple[str, dict[str, int]]:
+        ''' claim locked tokens '''
+        from satorilib.wallet.evrmore.scripts.mining import unlock
+        redeemParams = partial(
+            unlock.multiTimeMultisig,
+            sig=signatures[0],
+            sig2=signatures[1],
+            sig3=signatures[2],
+            sig4=signatures[3],
+            sig5=signatures[4],
+            timedRelease=timedRelease)
+        fee = feeOverride
+        tx = self._compileClaimOnP2SHMultiSigEnd(
+            tx=tx,
+            redeemScript=redeemScript,
+            redeemParams=redeemParams,
+            extraVinsTxinScripts=extraVinsTxinScripts)
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if fee >= requiredFee:
+            if broadcast:
+                return self.broadcast(self._txToHex(tx))
+            return tx.serialize().hex()
+        raise TransactionFailure('fee too low - start over completely')
 
-        # Check that we have at least one output
-        if not txouts:
-            raise ValueError("Transaction must have at least one output after fee deduction")
-        
-        # Create the transaction with Alice's signature
-        tx = self._createPartialOriginatorSimple([txin], [script_pub], txouts)
-        return self._txToHex(tx)
+    def thunderChannelCurrencyTransaction(
+        self,
+        address: str,
+        lockedAmount: float,
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+        dates: Optional[list[dt.datetime]] = None,
+        redeemScript: bytes = None, #'CScript'
+        timedRelease: bool = True,
+        changeAddress: str = None,
+        multisigMap: Optional[dict[str, bytes]] = None, # ordered pubkeys: signatures
+    ) -> tuple[str, dict[str, int]]:
+        ''' claim locked tokens '''
+        if (
+            lockedAmount <= 0 or
+            not Validate.address(address, self.symbol)
+        ):
+            raise TransactionFailure('SimpleTimeReleaseCurrencyTransaction bad params')
+        if multisigMap is None:
+            return self.thunderChannelRecallCurrencyTransaction(
+                address=address,
+                lockedAmount=lockedAmount,
+                memo=memo,
+                broadcast=broadcast,
+                feeOverride=feeOverride,
+                fundingTxIds=fundingTxIds,
+                fundingVouts=fundingVouts,
+                redeemScript=redeemScript,
+                timedRelease=timedRelease,
+                dates=dates)
+        return self.thunderChannelMultisigCurrencyTransactionStart(
+                address=address,
+                lockedAmount=lockedAmount,
+                memo=memo,
+                feeOverride=feeOverride,
+                fundingTxIds=fundingTxIds,
+                fundingVouts=fundingVouts,
+                changeAddress=changeAddress)
 
-    # 4. Bob finalises & broadcasts  ────────────────────────────────────────────────
-    def finaliseCommitmentTx(
-        self, 
-        partial_tx_hex: str,
-        redeem_script: CScript
-    ) -> str:
-        """
-        Adds Bob's signature, returns fully-signed tx hex.
-        """
-        tx = self._deserialize(bytes.fromhex(partial_tx_hex))
-        txin = tx.vin[0]
-        script_pub = P2SHEvrmoreAddress.from_redeemScript(redeem_script).to_scriptPubKey()
+    def thunderChannelRecallCurrencyTransaction(
+        self,
+        address: str,
+        lockedAmount: float,
+        memo: str=None,
+        broadcast: bool = True,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+        dates: Optional[list[dt.datetime]] = None,
+        redeemScript: bytes = None, #'CScript'
+        timedRelease: int = 3,
+    ) -> tuple[str, dict[str, int]]:
+        ''' claim locked tokens '''
+        from satorilib.wallet.evrmore.scripts.mining import unlock
+        redeemParams = partial(
+            unlock.multiTimeMultisig,
+            timedRelease=timedRelease)
+        currencySats = TxUtils.roundSatsDownToDivisibility(
+            sats=TxUtils.asSats(lockedAmount),
+            divisibility=self.divisibility)
+        fee = feeOverride or TxUtils.defaultFee
+        memoOut = self._compileMemoOutput(memo)
+        tx = self._compileClaimOnP2SH(
+            redeemScript=redeemScript,
+            redeemParams=redeemParams,
+            address=address,
+            currencySats=currencySats,
+            feeOverride=fee,
+            fundingTxIds=fundingTxIds,
+            fundingVouts=fundingVouts,
+            dates=dates,
+            extraVouts=[memoOut] if memoOut else [])
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if requiredFee * 0.99 < fee < requiredFee * 1.25:
+            if broadcast:
+                return self.broadcast(self._txToHex(tx))
+            return tx.serialize().hex()
+        return self.thunderChannelRecallCurrencyTransaction(
+            address=address,
+            lockedAmount=lockedAmount,
+            memo=memo,
+            broadcast=broadcast,
+            fundingTxIds=fundingTxIds,
+            fundingVouts=fundingVouts,
+            redeemScript=redeemScript,
+            timedRelease=timedRelease,
+            dates=dates,
+            feeOverride=requiredFee)
 
-        # extract Alice's existing sig
-        old_sigs = [e for e in txin.scriptSig if isinstance(e, bytes)]
+    def thunderChannelMultisigCurrencyTransactionStart(
+        self,
+        toAddress: str,
+        changeAddress: str,
+        lockedAmounts: list[float],
+        sendAmount: float,
+        memo: str=None,
+        feeOverride: Optional[int] = None,
+        fundingTxIds: list[str] = None,
+        fundingVouts: list[int] = None,
+    ) -> tuple[str, dict[str, int]]:
+        ''' claim locked tokens '''
+        lockedAmount = sum(lockedAmounts)
+        if lockedAmount < sendAmount:
+            raise TransactionFailure('sendAmount is greater than lockedAmount')
+        currencySats = TxUtils.roundSatsDownToDivisibility(
+            sats=TxUtils.asSats(sendAmount),
+            divisibility=self.divisibility)
+        fee = feeOverride or TxUtils.defaultFee*4
+        currencyChangeOut = self._compileCurrencyChangeOutput(
+            currencySats=currencySats,
+            gatheredCurrencySats=lockedAmount,
+            fee=fee)
+        memoOut = self._compileMemoOutput(memo)
+        tx = self._compileClaimOnP2SHMultiSigStart(
+            toAddress=toAddress,
+            currencySats=currencySats,
+            feeOverride=fee,
+            fundingTxIds=fundingTxIds,
+            fundingVouts=fundingVouts,
+            extraVouts=(
+                [currencyChangeOut] if currencyChangeOut else []
+            ) + (
+                [memoOut] if memoOut else []))
+        return tx
 
-        # add Bob's sig
-        self._signInput(tx, 0, txin, script_pub, SIGHASH_ALL,
-                        redeem_script=redeem_script,
-                        signatures=old_sigs)
+    def thunderChannelMultisigCurrencyTransactionMiddle(
+        self,
+        tx: bytes = None, # CMutableTransaction
+        redeemScript: bytes = None, # 'CScript'
+        vinIndex: int = 0,
+        sighashFlag: int = None,
+    ) -> bytes:
+        ''' create a signature for the input at vinIndex '''
+        return self._compileClaimOnP2SHMultiSigMiddle(
+            tx=tx,
+            redeemScript=redeemScript,
+            vinIndex=vinIndex,
+            **({sighashFlag: sighashFlag} if sighashFlag else {}))
 
-        return self._txToHex(tx)
-#Usage sketch
-#
-#python
-#Copy
-#Edit
-#alice = EvrmoreWallet.create(...)
-#bob   = EvrmoreWallet.create(...)
-#
-## open channel (Alice side)
-#redeem, chan_addr, fund_hex = alice.openPaymentChannel(
-#    bob_pub=bob._privateKeyObj.pub,
-#    amount_sats=100_000_000,             # 1 EVR
-#    abs_timeout=height_or_time)
-#
-## after fund_hex is mined …
-#commit_hex = alice.createCommitmentTx(
-#    funding_txid=<txid>, vout=<n>, funding_value=100_000_000,
-#    redeem_script=redeem,
-#    pay_sats=3_000_000,                 # 0.03 EVR
-#    bob_addr=bob.address)
-#
-## Bob finishes and broadcasts
-#final_hex = bob.finaliseCommitmentTx(commit_hex, redeem)
-#electrumx.broadcast(final_hex)    
+    def thunderChannelMultisigCurrencyTransactionEnd(
+        self,
+        tx: bytes, # CMutableTransaction
+        signatures: list[bytes],
+        extraVinsTxinScripts: Optional[list[bytes]] = None,
+        broadcast: bool = True,
+        feeOverride: int = 93500,
+        redeemScript: bytes = None, #'CScript'
+        timedRelease: bool = True,
+    ) -> tuple[str, dict[str, int]]:
+        ''' claim locked tokens '''
+        from satorilib.wallet.evrmore.scripts.mining import unlock
+        redeemParams = partial(
+            unlock.multiTimeMultisig,
+            sig=signatures[0],
+            sig2=signatures[1],
+            sig3=signatures[2],
+            sig4=signatures[3],
+            sig5=signatures[4],
+            timedRelease=timedRelease)
+        fee = feeOverride
+        tx = self._compileClaimOnP2SHMultiSigEnd(
+            tx=tx,
+            redeemScript=redeemScript,
+            redeemParams=redeemParams,
+            extraVinsTxinScripts=extraVinsTxinScripts)
+        requiredFee = TxUtils.getTxFee(self._txToHex(tx), TxUtils.feeRate)
+        print('estimated fee:', fee, 'actual fee:', requiredFee)
+        if fee >= requiredFee:
+            if broadcast:
+                return self.broadcast(self._txToHex(tx))
+            return tx.serialize().hex()
+        raise TransactionFailure('fee too low')
