@@ -4,8 +4,8 @@ from satorilib.wallet.evrmore.scripts.mining.lock import (
     multiTimeMultisig,
 )
 from satorilib.wallet.evrmore.scripts.channels.lock import (
-    thunderChannel,
-    thunderExpiring,
+    paymentChannel,
+    paymentChannelExpiring,
 )
 from satorilib.wallet.evrmore.scripts.multisig.lock import (
     basicMultisig,
@@ -29,7 +29,7 @@ __all__ = [
     "simpleTime",
     "multiTime",
     "multiTimeMultisig",
-    "thunderChannel",
-    "thunderExpiring",
+    "paymentChannel",
+    "paymentChannelExpiring",
     "basicMultisig",
 ]

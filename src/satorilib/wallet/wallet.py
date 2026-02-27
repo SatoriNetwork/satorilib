@@ -197,6 +197,9 @@ class Wallet(WalletBase):
         self.lastCurrencyAmount = 0
         self.balanceUpdatedCallback = balanceUpdatedCallback
         self.loadCache()
+        self.scriptsPath = self.walletPath.replace('.yaml', '.scripts.json')
+        self.scripts: dict[str, dict] = {}
+        self.loadScripts()
 
     def __call__(self):
         self.get()
@@ -279,6 +282,64 @@ class Wallet(WalletBase):
                 return True
         except Exception as e:
             logging.error("wallet transactions saveCache error", e)
+
+    ### P2SH Script Persistence ################################################
+
+    def loadScripts(self) -> bool:
+        if self.skipSave:
+            return False
+        try:
+            if os.path.isfile(self.scriptsPath):
+                with open(self.scriptsPath, 'r') as f:
+                    self.scripts = json.load(f)
+                return True
+            return False
+        except Exception as e:
+            logging.error(f'unable to load scripts file: {e}')
+            return False
+
+    def saveScripts(self) -> bool:
+        if self.skipSave:
+            return False
+        try:
+            safetify(self.scriptsPath)
+            tmpPath = self.scriptsPath + '.tmp'
+            with open(tmpPath, 'w') as f:
+                json.dump(self.scripts, f, indent=2)
+            os.replace(tmpPath, self.scriptsPath)
+            return True
+        except Exception as e:
+            logging.error(f'saveScripts error: {e}')
+            return False
+
+    def saveScript(self, scriptPayload: dict) -> bool:
+        p2shAddress = scriptPayload.get('p2sh_address')
+        if not p2shAddress:
+            logging.error('saveScript: missing p2sh_address')
+            return False
+        existing = self.scripts.get(p2shAddress, {})
+        now = dt.datetime.utcnow().isoformat() + 'Z'
+        merged = {**existing, **scriptPayload}
+        if 'created_at' not in existing:
+            merged['created_at'] = now
+        if scriptPayload.get('funding_txid'):
+            merged['status'] = 'funded'
+            if 'funded_at' not in existing or existing.get('status') != 'funded':
+                merged['funded_at'] = now
+        else:
+            merged.setdefault('status', 'pending')
+        merged['wallet_address'] = self.address
+        self.scripts[p2shAddress] = merged
+        return self.saveScripts()
+
+    def getScript(self, p2shAddress: str) -> Union[dict, None]:
+        return self.scripts.get(p2shAddress)
+
+    def removeScript(self, p2shAddress: str) -> bool:
+        if p2shAddress in self.scripts:
+            self.scripts[p2shAddress]['status'] = 'spent'
+            return self.saveScripts()
+        return False
 
     ### Electrumx ##############################################################
 
@@ -1003,6 +1064,7 @@ class Wallet(WalletBase):
                 funding_txid = self.broadcast(self._txToHex(tx))
                 for date, payload in scripts.items():
                     scripts[date]['funding_txid'] = funding_txid
+                    self.saveScript(payload)
                 return self._txToHex(tx), funding_txid, scripts
             return self._txToHex(tx), '', scripts
         return self.produceSimpleTime(
@@ -1086,6 +1148,7 @@ class Wallet(WalletBase):
                 funding_txid = self.broadcast(self._txToHex(tx))
                 for date, payload in scripts.items():
                     scripts[date]['funding_txid'] = funding_txid
+                    self.saveScript(payload)
                 return self._txToHex(tx), funding_txid, scripts
             return self._txToHex(tx), '', scripts
         return self.produceSimpleTimeCurrency(
@@ -1174,6 +1237,7 @@ class Wallet(WalletBase):
                 funding_txid = self.broadcast(self._txToHex(tx))
                 for date, payload in scripts.items():
                     scripts[date]['funding_txid'] = funding_txid
+                    self.saveScript(payload)
                 return self._txToHex(tx), funding_txid, scripts
             return self._txToHex(tx), '', scripts
         return self.produceMultiTimeMultisig(
@@ -1257,6 +1321,7 @@ class Wallet(WalletBase):
                 funding_txid = self.broadcast(self._txToHex(tx))
                 for date, payload in scripts.items():
                     scripts[date]['funding_txid'] = funding_txid
+                    self.saveScript(payload)
                 return self._txToHex(tx), funding_txid, scripts
             return self._txToHex(tx), '', scripts
         return self.produceMultiTimeMultisigCurrency(

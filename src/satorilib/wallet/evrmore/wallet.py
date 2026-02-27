@@ -697,9 +697,9 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         assert all(len(bytes(v.scriptSig)) > 0 for v in tx.vin), "unsigned input(s)"
         return tx
 
-    ### p2sh - lock - thunder ################################################################
+    ### p2sh - lock - payment channel ################################################################
 
-    def produceThunderChannel(
+    def producePaymentChannel(
         self,
         receiver: str,
         sender: str=None,
@@ -714,25 +714,35 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
     ) -> tuple[str, dict[str, Any]]:
         ''' creates a transaction with multiple currency recipients '''
         if isExpiring:
-            from satorilib.wallet.evrmore.scripts.channels.lock import thunderExpiring
-            thunderChannelFn = thunderExpiring
+            from satorilib.wallet.evrmore.scripts.channels.lock import paymentChannelExpiring
+            paymentChannelFn = paymentChannelExpiring
         else:
-            from satorilib.wallet.evrmore.scripts.channels.lock import thunderChannel
-            thunderChannelFn = thunderChannel
+            from satorilib.wallet.evrmore.scripts.channels.lock import paymentChannel
+            paymentChannelFn = paymentChannel
         from satorilib.wallet.evrmore.utils.multisig import MultisigUtils
         sender = sender or self.pubkey
-        redeemScript = thunderChannelFn(
-            sender=sender,
-            receiver=receiver,
-            blocks=blocks,
-            minutes=minutes)
+        if isExpiring:
+            expiryTimestamp = (
+                dt.datetime.utcnow() + dt.timedelta(minutes=minutes)
+                if minutes else None)
+            redeemScript = paymentChannelFn(
+                sender=sender,
+                receiver=receiver,
+                blocks=blocks,
+                timestamp=expiryTimestamp)
+        else:
+            redeemScript = paymentChannelFn(
+                sender=sender,
+                receiver=receiver,
+                blocks=blocks,
+                minutes=minutes)
         scriptPayload = {
             'redeem_script': str(redeemScript),
             'redeem_script_hex': redeemScript.hex(),
             'redeem_script_size': len(redeemScript),
             'p2sh_address': self.generateP2SHAddress(redeemScript),
             'amount': amount,
-            'function': thunderChannelFn.__name__,
+            'function': paymentChannelFn.__name__,
             'funding_txid': None, # added during send
             'funding_vout': None, # added during send
             'currency_sats': None, # added during send
@@ -749,9 +759,9 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         timestamp = str(time.time())
         MultisigUtils.saveScripts(f'unsent_scripts-{timestamp}.json', [scriptPayload])
         if isCurrency:
-            fn = self.produceThunderChannelCurrencyFromScript
+            fn = self.producePaymentChannelCurrencyFromScript
         else:
-            fn = self.produceThunderChannelFromScript
+            fn = self.producePaymentChannelFromScript
         txhash, txid, scriptPayload = fn(
             redeemScript=redeemScript,
             scriptPayload=scriptPayload,
@@ -759,15 +769,16 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             broadcast=broadcast,
             feeOverride=feeOverride)
         if len(scriptPayload['funding_txid']) != 64:
-            logging.error(f'produceThunderChannel failed: funding_txid is not 64 characters, {txid}')
+            logging.error(f'producePaymentChannel failed: funding_txid is not 64 characters, {txid}')
         scriptPayload['funding_txhash'] = txhash
         print('scriptPayload:', scriptPayload)
         MultisigUtils.saveScripts(
             f'scripts-{timestamp}-{str(time.time())}.json',
             {scriptPayload["p2sh_address"]: scriptPayload})
+        self.saveScript(scriptPayload)
         return txid, scriptPayload
 
-    def produceThunderChannelCurrency(
+    def producePaymentChannelCurrency(
         self,
         receiver: str,
         sender: str=None,
@@ -778,7 +789,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         broadcast: bool = True,
         feeOverride: Optional[int] = None,
     ) -> tuple[str, dict[str, Any]]:
-        return self.produceThunderChannel(
+        return self.producePaymentChannel(
             receiver=receiver,
             sender=sender,
             blocks=blocks,
@@ -790,7 +801,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             isCurrency=True,
             isExpiring=False)
 
-    def produceThunderExpiring(
+    def producePaymentChannelExpiring(
         self,
         receiver: str,
         sender: str=None,
@@ -801,7 +812,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         broadcast: bool = True,
         feeOverride: Optional[int] = None,
     ) -> tuple[str, dict[str, Any]]:
-        return self.produceThunderChannel(
+        return self.producePaymentChannel(
             receiver=receiver,
             sender=sender,
             blocks=blocks,
@@ -813,7 +824,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             isCurrency=False,
             isExpiring=True)
 
-    def produceThunderExpiringCurrency(
+    def producePaymentChannelExpiringCurrency(
         self,
         receiver: str,
         sender: str=None,
@@ -824,7 +835,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         broadcast: bool = True,
         feeOverride: Optional[int] = None,
     ) -> tuple[str, dict[str, Any]]:
-        return self.produceThunderChannel(
+        return self.producePaymentChannel(
             receiver=receiver,
             sender=sender,
             blocks=blocks,
@@ -836,7 +847,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             isCurrency=True,
             isExpiring=True)
 
-    def produceThunderChannelFromScript(
+    def producePaymentChannelFromScript(
         self,
         redeemScript: bytes,
         scriptPayload: dict[str, Any],
@@ -846,13 +857,13 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
     ) -> tuple[str, str, dict[str, dict]]:
         '''
         creates a transaction with multiple currency recipients
-        funding a thunder channel is pretty much a regular transaction
+        funding a payment channel is pretty much a regular transaction
         plus managment of extra p2sh details
         '''
         amount = scriptPayload['amount']
         address = scriptPayload['p2sh_address']
         if amount <= 0 or not Validate.address(address, self.symbol):
-            raise TransactionFailure('produceThunderChannel bad params')
+            raise TransactionFailure('producePaymentChannel bad params')
         assumedVout = 0
         scriptPayload['funding_txid'] = None
         scriptPayload['funding_vout'] = assumedVout
@@ -902,14 +913,14 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 scriptPayload['funding_txid'] = funding_txid
                 return self._txToHex(tx), funding_txid, scriptPayload
             return self._txToHex(tx), '', scriptPayload
-        return self.produceThunderChannelFromScript(
+        return self.producePaymentChannelFromScript(
             redeemScript=redeemScript,
             scriptPayload=scriptPayload,
             memo=memo,
             broadcast=broadcast,
             feeOverride=requiredFee)
 
-    def produceThunderChannelCurrencyFromScript(
+    def producePaymentChannelCurrencyFromScript(
         self,
         script: dict,
         memo: str=None,
@@ -920,7 +931,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         amount = script['amount']
         address = script['p2sh_address']
         if amount <= 0 or not Validate.address(address, self.symbol):
-            raise TransactionFailure('produceThunderChannelCurrency bad params')
+            raise TransactionFailure('producePaymentChannelCurrency bad params')
         assumedVout = 0
         script['funding_txid'] = None
         script['funding_vout'] = assumedVout
@@ -964,43 +975,43 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 script['funding_txid'] = funding_txid
                 return self._txToHex(tx), funding_txid, script
             return self._txToHex(tx), '', script
-        return self.produceThunderChannelCurrencyFromScript(
+        return self.producePaymentChannelCurrencyFromScript(
             script=script,
             memo=memo,
             broadcast=broadcast,
             feeOverride=requiredFee)
 
-    def produceThunderExpiringFromScript(
+    def producePaymentChannelExpiringFromScript(
         self,
         script: dict,
         memo: str=None,
         broadcast: bool = True,
         feeOverride: Optional[int] = None,
     ) -> tuple[str, str, dict]:
-        ''' alias for produceThunderChannelFromScript '''
-        return self.produceThunderChannelFromScript(
+        ''' alias for producePaymentChannelFromScript '''
+        return self.producePaymentChannelFromScript(
             script=script,
             memo=memo,
             broadcast=broadcast,
             feeOverride=feeOverride)
 
-    def produceThunderExpiringCurrencyFromScript(
+    def producePaymentChannelExpiringCurrencyFromScript(
         self,
         script: dict,
         memo: str=None,
         broadcast: bool = True,
         feeOverride: Optional[int] = None,
     ) -> tuple[str, str, dict]:
-        ''' alias for produceThunderChannelCurrencyFromScript '''
-        return self.produceThunderChannelCurrencyFromScript(
+        ''' alias for producePaymentChannelCurrencyFromScript '''
+        return self.producePaymentChannelCurrencyFromScript(
             script=script,
             memo=memo,
             broadcast=broadcast,
             feeOverride=feeOverride)
 
-    ### p2sh - unlock - thunder ################################################################
+    ### p2sh - unlock - payment channel ################################################################
 
-    def thunderChannelTransaction(
+    def paymentChannelTransaction(
         self,
         toAddress: str,
         lockedAmounts: list[float],
@@ -1022,7 +1033,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         ):
             raise TransactionFailure('SimpleTimeReleaseCurrencyTransaction bad params')
         if multisigMap is None:
-            return self.thunderChannelRecallTransaction(
+            return self.paymentChannelRecallTransaction(
                 toAddress=toAddress,
                 lockedAmounts=lockedAmounts,
                 memo=memo,
@@ -1033,7 +1044,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 redeemScript=redeemScript,
                 timedRelease=timedRelease,
                 date=date)
-        return self.thunderChannelMultisigTransactionStart(
+        return self.paymentChannelMultisigTransactionStart(
                 toAddress=toAddress,
                 changeAddress=changeAddress,
                 lockedAmounts=lockedAmounts,
@@ -1043,7 +1054,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 fundingVouts=fundingVouts,
                 date=date)
 
-    def thunderChannelRecallTransaction(
+    def paymentChannelRecallTransaction(
         self,
         toAddress: str,
         lockedAmounts: list[float],
@@ -1100,7 +1111,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             if broadcast:
                 return self.broadcast(self._txToHex(tx))
             return tx.serialize().hex()
-        return self.thunderChannelRecallTransaction(
+        return self.paymentChannelRecallTransaction(
             toAddress=toAddress,
             lockedAmounts=lockedAmounts,
             memo=memo,
@@ -1112,7 +1123,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             date=date,
             feeOverride=requiredFee)
 
-    def thunderChannelMultisigTransactionStart(
+    def paymentChannelMultisigTransactionStart(
         self,
         toAddress: str,
         changeAddress: str,
@@ -1165,7 +1176,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 [memoOut] if memoOut else []))
         return tx, txinScripts
 
-    def thunderChannelMultisigTransactionMiddle(
+    def paymentChannelMultisigTransactionMiddle(
         self,
         tx: bytes = None, # CMutableTransaction
         redeemScript: bytes = None, # 'CScript'
@@ -1179,7 +1190,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             vinIndex=vinIndex,
             **({sighashFlag: sighashFlag} if sighashFlag else {}))
 
-    def thunderChannelMultisigTransactionEnd(
+    def paymentChannelMultisigTransactionEnd(
         self,
         tx: bytes, # CMutableTransaction
         signatures: list[bytes],
@@ -1213,7 +1224,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             return tx.serialize().hex()
         raise TransactionFailure('fee too low - start over completely')
 
-    def thunderChannelCurrencyTransaction(
+    def paymentChannelCurrencyTransaction(
         self,
         address: str,
         lockedAmount: float,
@@ -1235,7 +1246,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         ):
             raise TransactionFailure('SimpleTimeReleaseCurrencyTransaction bad params')
         if multisigMap is None:
-            return self.thunderChannelRecallCurrencyTransaction(
+            return self.paymentChannelRecallCurrencyTransaction(
                 address=address,
                 lockedAmount=lockedAmount,
                 memo=memo,
@@ -1246,7 +1257,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 redeemScript=redeemScript,
                 timedRelease=timedRelease,
                 dates=dates)
-        return self.thunderChannelMultisigCurrencyTransactionStart(
+        return self.paymentChannelMultisigCurrencyTransactionStart(
                 address=address,
                 lockedAmount=lockedAmount,
                 memo=memo,
@@ -1255,7 +1266,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 fundingVouts=fundingVouts,
                 changeAddress=changeAddress)
 
-    def thunderChannelRecallCurrencyTransaction(
+    def paymentChannelRecallCurrencyTransaction(
         self,
         address: str,
         lockedAmount: float,
@@ -1294,7 +1305,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             if broadcast:
                 return self.broadcast(self._txToHex(tx))
             return tx.serialize().hex()
-        return self.thunderChannelRecallCurrencyTransaction(
+        return self.paymentChannelRecallCurrencyTransaction(
             address=address,
             lockedAmount=lockedAmount,
             memo=memo,
@@ -1306,7 +1317,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             dates=dates,
             feeOverride=requiredFee)
 
-    def thunderChannelMultisigCurrencyTransactionStart(
+    def paymentChannelMultisigCurrencyTransactionStart(
         self,
         toAddress: str,
         changeAddress: str,
@@ -1342,7 +1353,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 [memoOut] if memoOut else []))
         return tx
 
-    def thunderChannelMultisigCurrencyTransactionMiddle(
+    def paymentChannelMultisigCurrencyTransactionMiddle(
         self,
         tx: bytes = None, # CMutableTransaction
         redeemScript: bytes = None, # 'CScript'
@@ -1356,7 +1367,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             vinIndex=vinIndex,
             **({sighashFlag: sighashFlag} if sighashFlag else {}))
 
-    def thunderChannelMultisigCurrencyTransactionEnd(
+    def paymentChannelMultisigCurrencyTransactionEnd(
         self,
         tx: bytes, # CMutableTransaction
         signatures: list[bytes],

@@ -2,7 +2,7 @@ from typing import List, Optional
 from evrmore.core.script import CScript, OP_0, OP_TRUE, OP_FALSE
 
 
-def thunderChannel(
+def paymentChannel(
     *,
     sender_sig: bytes,
     receiver_sig: Optional[bytes] = None,
@@ -16,7 +16,7 @@ def thunderChannel(
     return CScript([sender_sig, OP_FALSE])
 
 
-def thunderExpiring(
+def paymentChannelExpiring(
     *,
     sender_sig: bytes,
     receiver_sig: Optional[bytes] = None,

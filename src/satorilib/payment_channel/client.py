@@ -1,21 +1,21 @@
-''' Simple HTTP wrapper for the Thunder payment channel micro-service. '''
+''' Simple HTTP wrapper for the payment channel micro-service. '''
 
 from typing import Dict, List, Optional, Union, Any, Callable
 import requests
 import logging
 
-class ThunderClient:
-    """Client for interacting with the Thunder payment channel microservice.
-    
-    This client provides a simple interface for all Thunder API endpoints.
+class PaymentChannelClient:
+    """Client for interacting with the payment channel microservice.
+
+    This client provides a simple interface for all payment channel API endpoints.
     Authentication is handled separately by the caller.
     """
-    
+
     def __init__(self, base_url: str = "http://localhost:5000", wallet = None):
-        """Initialize the Thunder client.
-        
+        """Initialize the payment channel client.
+
         Args:
-            base_url: Base URL of the Thunder service, defaults to http://localhost:5000
+            base_url: Base URL of the payment channel service, defaults to http://localhost:5000
         """
         self.base = base_url.rstrip("/")
         self.wallet = wallet
@@ -42,7 +42,7 @@ class ThunderClient:
         headers: Optional[Dict] = None,
         raise_for_status: bool = True,
     ) -> requests.Response:
-        """Make an authenticated call to the Thunder API.
+        """Make an authenticated call to the payment channel API.
         
         Args:
             function: The requests function to call (get, post, etc)
@@ -86,7 +86,7 @@ class ThunderClient:
         payload: Optional[Union[Dict, str]] = None,
         headers: Optional[Dict] = None,
     ) -> requests.Response:
-        """Make an unauthenticated call to the Thunder API.
+        """Make an unauthenticated call to the payment channel API.
         
         Args:
             function: The requests function to call (get, post, etc)
