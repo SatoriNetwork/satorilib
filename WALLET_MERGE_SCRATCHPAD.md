@@ -180,7 +180,12 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
 - [x] Step 2: Compare Satori/Lib (ai-p2sh + stash) vs satorilib — covered in sections 1.5 & 1.6
 - [x] Step 3: Compare toolkit vs Satori/Lib (ai-p2sh + stash) — find toolkit-only improvements
 - [x] Step 4: Plan what to port into satorilib
-- [ ] Step 5: Begin porting changes
+- [x] Step 5a: Copy scripts/ package from toolkit — DONE
+- [x] Step 5b: Copy utils/ package from toolkit — DONE
+- [x] Step 5c: Update evrmore/__init__.py — DONE
+- [x] Step 5d: Add thunder channel methods to evrmore/wallet.py — DONE
+- [x] Step 5e: Add p2sh methods to base wallet/wallet.py — DONE
+- [ ] Step 5f: Add signForPubkey() to sign.py
 
 ---
 
@@ -448,11 +453,26 @@ Specifically, add these methods (from toolkit) **without modifying** existing sa
 **Risk: Medium** — need to be careful with the multi-input refactor on methods
 that satorilib already modified (identity pattern, etc.). Should review line by line.
 
-#### Task 5e: Fix naming in base `wallet/wallet.py`
-The Satori vs Currency method name swap. This touches ~10 method names.
+#### Task 5e: Add p2sh methods to base `wallet/wallet.py`
+Originally described as a naming fix, but satorilib's base wallet had NONE of the
+multiTime*/simpleTime*/produce* methods at all. This was a full port of 16 methods
+from the toolkit, plus supporting infrastructure changes.
 
-**Risk: Medium** — need to check if anything in satorilib calls these methods by the
-old (wrong) names. If so, those callers need updating too.
+**Changes made:**
+1. **Imports added:** `from functools import partial`, `Optional` to typing, `import datetime as dt`
+2. **`_gatherCurrencyUnspents`**: Added `feeOverride` and `feeRate` params (toolkit pattern)
+3. **`_compileCurrencyOutputs`** base class: Overloaded signature (`satsByAddress` dict or `currencySats`+`address`)
+4. **`_compileCurrencyChangeOutput`** base class: Added `fee` param alongside existing `inputCount`/`outputCount`
+5. **`_compileCurrencyOutputs`** evrmore subclass: Added `_compileCurrencyOutput` helper, updated to handle
+   both old positional `(currencySats, address)` and new dict-based `(satsByAddress)` calling patterns
+6. **16 new methods** added to base wallet.py with section headers:
+   - `### p2sh - lock ###`: produceSimpleTime, produceSimpleTimeCurrency, produceMultiTimeMultisig, produceMultiTimeMultisigCurrency
+   - `### p2sh - unlock ###`: simpleTimeTransaction, simpleTimeCurrencyTransaction, plus 10 multiTime* methods
+   - `### p2pkh ###`: existing methods preserved after new section
+
+Base wallet.py: 1981 → 2829 lines. Evrmore wallet.py: 1389 → 1398 lines.
+
+**Risk: Completed** — syntax verified with ast.parse(). Backward-compatible (existing callers unchanged).
 
 #### Task 5f: Add `signForPubkey()` to sign.py
 Toolkit's `utils/sign.py` has a `signForPubkey()` function that satorilib's `sign.py` lacks.
