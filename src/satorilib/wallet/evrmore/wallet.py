@@ -328,11 +328,13 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             txouts.append(txout)
         return txouts
 
-    def _compileCurrencyOutputs(self, currencySats: int, address: str) -> list[CMutableTxOut]:
-        return [CMutableTxOut(
-            currencySats,
-            CEvrmoreAddress(address).to_scriptPubKey()
-        )]
+    def _compileCurrencyOutput(self, address: str, sats: int) -> CMutableTxOut:
+        return CMutableTxOut(
+            sats,
+            CEvrmoreAddress(address).to_scriptPubKey())
+
+    def _compileCurrencyOutputs(self, satsByAddress: dict[str, int] = None, address: str = None, sats: int = None) -> list[CMutableTxOut]:
+        return [self._compileCurrencyOutput(address, sats)] if address and sats else [self._compileCurrencyOutput(addr, s) for addr, s in satsByAddress.items()] if satsByAddress else []
 
     def _compileSatoriChangeOutput(
         self,
@@ -591,7 +593,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             for txId, vout in zip(txIds, vouts)
         ] + (extraVins or [])
         txouts = (
-            self._compileCurrencyOutputs(currencySats - feeOverride, address)
+            self._compileCurrencyOutputs(address=address, sats=currencySats - feeOverride)
             if currencySats > 0 else []
         ) + (
             self._compileSatoriOutputs({address: satoriSats})
@@ -642,7 +644,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             for fundingTxId, fundingVout in zip(fundingTxIds, fundingVouts)
             ] + (extraVins or [])
         txouts = (
-            self._compileCurrencyOutputs(currencySats - feeOverride, toAddress)
+            self._compileCurrencyOutputs(address=toAddress, sats=currencySats - feeOverride)
             if currencySats > 0 else []
         ) + (
             self._compileSatoriOutputs({toAddress: satoriSats})
@@ -937,7 +939,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 outputCount=1 + 1 + memoCount)
         txins, txinScripts = self._compileInputs(
             gatheredCurrencyUnspents=gatheredCurrencyUnspents)
-        currencyOuts = self._compileCurrencyOutputs(script['currency_sats'], address)
+        currencyOuts = self._compileCurrencyOutputs(address=address, sats=script['currency_sats'])
         fee = feeOverride or TxUtils.estimatedFee(
             inputCount=len(txins),
             outputCount=1 + 1 + memoCount)
