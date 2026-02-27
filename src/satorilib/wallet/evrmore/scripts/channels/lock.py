@@ -11,7 +11,7 @@ CSV_UNIT_SECS = 512
 CSV_MAX_UNITS = 0xFFFF     # 16 bits # 33,553,920 s = 559,232 min ≈ 388.36 days
 
 
-def thunderChannel(
+def paymentChannel(
     sender: Union[bytes, str], 
     receiver: Union[bytes, str], 
     blocks: Union[int, None] = None, 
@@ -95,7 +95,7 @@ def thunderChannel(
 CLTV_TS_THRESHOLD = 500_000_000  # <=> block-height mode below this, timestamp mode at/above this
 
 
-def thunderExpiring(
+def paymentChannelExpiring(
     sender: Union[bytes, str], 
     receiver: Union[bytes, str], 
     blocks: Union[int, None] = None, 

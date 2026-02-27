@@ -121,9 +121,9 @@ is cosmetic. **Category: intentional divergence (acceptable).**
 Toolkit has flexible signature (dict or `address`+`sats`). Satorilib only has dict form.
 All callers pass dicts. **Category: intentional divergence (acceptable).**
 
-### 3.9 Thunder Channel Methods
+### 3.9 Payment Channel Methods
 
-All 16 thunder methods are present in both. **Category: IDENTICAL after port.** Satorilib has
+All 16 payment channel methods are present in both. **Category: IDENTICAL after port.** Satorilib has
 bug fixes (missing `return` statements, duplicate method name) that toolkit still lacks.
 
 ---
@@ -211,8 +211,8 @@ Single key rename: `pubkey` → `wallet-pubkey`. **Category: satorilib improveme
 - `_checkSatoriValue()` length-prefix fallback
 - Mundo integration improvements (feeSats, signOnly, self-broadcasting)
 - `getReadyToSend()` divisibility fix
-- Thunder channel `return` statement fixes
-- Thunder channel duplicate method name fix
+- Payment channel `return` statement fixes
+- Payment channel duplicate method name fix
 - `P2SHRedeemScripts` class
 - `satori_tx.py` parsing utilities
 - Top-level sign/verify/valid wrappers

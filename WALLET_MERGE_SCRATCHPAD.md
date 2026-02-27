@@ -9,9 +9,9 @@ incorporating good code from the other copies.
 |-------|------|-------|
 | **satorilib** (active) | `/home/jordan/repos/satorilib/src/satorilib/wallet/evrmore/` | New consolidated repo, currently in production |
 | **Satori/Lib** (main) | `/home/jordan/repos/Satori/Lib/satorilib/wallet/evrmore/` | Old production repo, `main` branch |
-| **Satori/Lib** (ai-p2sh) | Same path, branch `ai-p2sh` | P2SH/thunder development branch |
-| **Satori/Lib** (stash) | Same path, `stash@{0}` on ai-p2sh | WIP thunder channel renaming + multi-input support |
-| **toolkit** | `/home/jordan/repos/toolkit/Lib/satorilib/wallet/evrmore/` | Most developed thunder channel code (59KB wallet.py) |
+| **Satori/Lib** (ai-p2sh) | Same path, branch `ai-p2sh` | P2SH/payment channel development branch |
+| **Satori/Lib** (stash) | Same path, `stash@{0}` on ai-p2sh | WIP payment channel renaming + multi-input support |
+| **toolkit** | `/home/jordan/repos/toolkit/Lib/satorilib/wallet/evrmore/` | Most developed payment channel code (59KB wallet.py) |
 
 ---
 
@@ -121,7 +121,7 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
 - `identity.py` — **NEW** 76-line EvrmoreIdentity class (same as what's in satorilib now)
 - `scripts.py` — **DELETED** (replaced by `scripts/` package)
 - `scripts/` package — **NEW** with submodules:
-  - `channels/lock.py` (171 lines) — `renewableThunderChannel`, `nonrenewableThunderChannel`
+  - `channels/lock.py` (171 lines) — `renewablePaymentChannel`, `nonrenewablePaymentChannel`
   - `channels/unlock.py` (30 lines)
   - `mining/lock.py` (412 lines) — `simpleTime`, `multiTime`, `multiTimeMultisig`
   - `mining/unlock.py` (68 lines)
@@ -151,8 +151,8 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
 4 files changed, 772 insertions, 87 deletions:
 
 1. **`scripts/__init__.py`** — Renames:
-   - `renewableThunderChannel` → `thunderChannel`
-   - `nonrenewableThunderChannel` → `thunderExpiring`
+   - `renewablePaymentChannel` → `paymentChannel`
+   - `nonrenewablePaymentChannel` → `paymentChannelExpiring`
 
 2. **`utils/multisig.py`** — Minor:
    - `dict[dt.datetime, dict]` → `dict[Any, dict]` (type annotation fix)
@@ -166,11 +166,11 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
    - Parameter renames: `address` → `toAddress`
 
 4. **`wallet/wallet.py`** — **MASSIVE** +798 lines. Major additions to base Wallet class:
-   - Thunder channel management methods (create, claim, close)
+   - Payment channel management methods (create, claim, close)
    - Multi-signature coordination
    - P2SH transaction building and signing
    - Channel state tracking
-   - (This is the bulk of the thunder/spillman protocol implementation)
+   - (This is the bulk of the payment channel/spillman protocol implementation)
 
 ---
 
@@ -183,7 +183,7 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
 - [x] Step 5a: Copy scripts/ package from toolkit — DONE
 - [x] Step 5b: Copy utils/ package from toolkit — DONE
 - [x] Step 5c: Update evrmore/__init__.py — DONE
-- [x] Step 5d: Add thunder channel methods to evrmore/wallet.py — DONE
+- [x] Step 5d: Add payment channel methods to evrmore/wallet.py — DONE
 - [x] Step 5e: Add p2sh methods to base wallet/wallet.py — DONE
 - [x] Step 5f: Add signForPubkey() to sign.py — ALREADY DONE (exists in utils/sign.py, all callers import from there)
 - [x] Step 6a: Port TxUtils fee utilities to utils/transaction.py — DONE (feeRate, defaultFee, getTxSize, getTxFee)
@@ -205,13 +205,13 @@ Most of it is outside the evrmore wallet (centrifugo, datamanager, sqlite, etc.)
 
 ```
 ai-p2sh branch development:
-  Jul 2-Aug 23, 2025    Various commits (centrifugo, otp, scripts, thunder signing)
+  Jul 2-Aug 23, 2025    Various commits (centrifugo, otp, scripts, payment channel signing)
   Aug 23 (807f350)       "thunder scripts" — LAST COMMIT on ai-p2sh
-  [stash created]        WIP: multi-input, thunderChannel rename
+  [stash created]        WIP: multi-input, paymentChannel rename
 
 toolkit fork:
   Aug 29 (2ddba25)       "fork" — forked FROM ai-p2sh (or close to it)
-  Sep 1  (932ec7a)       "fixed production of thunder channels, must review unlock now"
+  Sep 1  (932ec7a)       "fixed production of payment channels, must review unlock now"
 ```
 
 **Verdict: toolkit is a FORK of ai-p2sh, taken further.** It was NOT the other way around.
@@ -219,7 +219,7 @@ The ai-p2sh branch was the development branch, the toolkit was forked from it on
 (6 days after the last ai-p2sh commit), and then had further development on Sep 1.
 
 The stash on ai-p2sh contains some changes that ALSO appear in toolkit (the multi-input
-refactor, the thunderChannel rename), suggesting the stash was either:
+refactor, the paymentChannel rename), suggesting the stash was either:
 - Created around the same time as the toolkit fork (parallel work), OR
 - Created after looking at toolkit changes and starting to backport them
 
@@ -241,9 +241,9 @@ refactor, the thunderChannel rename), suggesting the stash was either:
 - `walletsh.py` — same
 
 #### `scripts/__init__.py` — DIFFERS (same as stash)
-Toolkit has the thunder channel rename that was also in the stash:
-- `renewableThunderChannel` → `thunderChannel`
-- `nonrenewableThunderChannel` → `thunderExpiring`
+Toolkit has the payment channel rename that was also in the stash:
+- `renewablePaymentChannel` → `paymentChannel`
+- `nonrenewablePaymentChannel` → `paymentChannelExpiring`
 
 #### `utils/multisig.py` — DIFFERS (same as stash)
 - Added `Any` import, `### CREATE ###` header
@@ -263,36 +263,36 @@ Toolkit has **all the stash changes** (multi-input, rename) PLUS massive new cod
 
 1. New imports: `functools.partial`, `time`, `Any`, `Validate`
 
-2. **`produceThunderChannel()`** (~50 lines) — Creates/funds a thunder channel:
-   - Generates redeem script (thunderChannel or thunderExpiring)
+2. **`producePaymentChannel()`** (~50 lines) — Creates/funds a payment channel:
+   - Generates redeem script (paymentChannel or paymentChannelExpiring)
    - Handles both Satori asset and currency channels
    - Fee estimation with recursive retry
    - Broadcasts funding tx
 
-3. **`produceThunderChannelFromScript()`** (~50 lines) — Funds channel from pre-built script payload
+3. **`producePaymentChannelFromScript()`** (~50 lines) — Funds channel from pre-built script payload
 
-4. **`produceThunderChannelCurrencyFromScript()`** (~50 lines) — Currency variant
+4. **`producePaymentChannelCurrencyFromScript()`** (~50 lines) — Currency variant
 
-5. **`produceThunderExpiringFromScript()`** — Alias for expiring channels
-6. **`produceThunderExpiringCurrencyFromScript()`** — Currency alias
+5. **`producePaymentChannelExpiringFromScript()`** — Alias for expiring channels
+6. **`producePaymentChannelExpiringCurrencyFromScript()`** — Currency alias
 
-7. **`thunderChannelTransaction()`** (~45 lines) — Claim/unlock thunder channel:
+7. **`paymentChannelTransaction()`** (~45 lines) — Claim/unlock payment channel:
    - Dispatches to recall (single-sig) or multisig based on params
    - Validates amounts and addresses
 
-8. **`thunderChannelRecallTransaction()`** (~50 lines) — Single-sig channel recall:
+8. **`paymentChannelRecallTransaction()`** (~50 lines) — Single-sig channel recall:
    - Uses `mining.unlock.multiTimeMultisig` for redeem params
    - Fee estimation with retry
 
-9. **`thunderChannelMultisigTransactionStart()`** (~35 lines) — Multi-sig claim start
-10. **`thunderChannelMultisigTransactionMiddle()`** — Create signature for input
-11. **`thunderChannelMultisigTransactionEnd()`** (~35 lines) — Finalize with all signatures
+9. **`paymentChannelMultisigTransactionStart()`** (~35 lines) — Multi-sig claim start
+10. **`paymentChannelMultisigTransactionMiddle()`** — Create signature for input
+11. **`paymentChannelMultisigTransactionEnd()`** (~35 lines) — Finalize with all signatures
 
-12. **`thunderChannelCurrencyTransaction()`** (~30 lines) — Currency claim dispatcher
-13. **`thunderChannelRecallCurrencyTransaction()`** (~50 lines) — Currency single-sig recall
-14. **`thunderChannelMultisigCurrencyTransactionStart()`** (~35 lines)
-15. **`thunderChannelMultisigCurrencyTransactionMiddle()`** — Currency signature
-16. **`thunderChannelMultisigCurrencyTransactionEnd()`** (~35 lines) — Currency finalize
+12. **`paymentChannelCurrencyTransaction()`** (~30 lines) — Currency claim dispatcher
+13. **`paymentChannelRecallCurrencyTransaction()`** (~50 lines) — Currency single-sig recall
+14. **`paymentChannelMultisigCurrencyTransactionStart()`** (~35 lines)
+15. **`paymentChannelMultisigCurrencyTransactionMiddle()`** — Currency signature
+16. **`paymentChannelMultisigCurrencyTransactionEnd()`** (~35 lines) — Currency finalize
 
 **What toolkit REMOVED from ai-p2sh (replaced with the above):**
 - `createP2SHTransaction()` — was an unused example with a `raise Exception` at the end
@@ -335,7 +335,7 @@ claiming Satori assets from a P2SH channel, you still need EVR for the transacti
 1. **satorilib already has some ai-p2sh improvements** — The identity refactor, sign.py changes, and
    wallet constructor refactor in satorilib match what's on ai-p2sh. Someone partially merged these.
 
-2. **satorilib is MISSING the entire p2sh/thunder infrastructure** from all branches.
+2. **satorilib is MISSING the entire p2sh/payment channel infrastructure** from all branches.
 
 3. **Lineage: ai-p2sh → stash → toolkit** — ai-p2sh was the development branch. The stash
    started a refactor (multi-input, renames). The toolkit was forked and taken much further,
@@ -345,14 +345,14 @@ claiming Satori assets from a P2SH channel, you still need EVR for the transacti
    `generateCommitmentTx`, `finaliseCommitmentTx` were examples/pseudocode with comments like
    "this is unused" and `raise Exception("don't use it")`.
 
-5. **toolkit has the REAL implementations** — 16 thunder channel methods (produce, claim,
+5. **toolkit has the REAL implementations** — 16 payment channel methods (produce, claim,
    recall, multisig start/middle/end — for both Satori assets and currency).
 
 6. **toolkit fixed a naming bug** — The Satori vs Currency method names were swapped in
    ai-p2sh. Toolkit corrected them.
 
-7. **The "most complete" version for thunder channels is toolkit.** To get satorilib fully
-   updated, we should bring in the toolkit's evrmore/wallet.py thunder methods, the
+7. **The "most complete" version for payment channels is toolkit.** To get satorilib fully
+   updated, we should bring in the toolkit's evrmore/wallet.py payment channel methods, the
    scripts/ package, and the utils/ package, plus the base wallet.py naming fix.
 
 ---
@@ -361,16 +361,16 @@ claiming Satori assets from a P2SH channel, you still need EVR for the transacti
 
 ### Guiding Principle
 satorilib is the canonical repo. It has improvements toolkit doesn't (RPC support, constructor
-cleanup, OTP). We ADD toolkit's thunder code to satorilib — we do NOT overwrite satorilib's
+cleanup, OTP). We ADD toolkit's payment channel code to satorilib — we do NOT overwrite satorilib's
 existing improvements.
 
 ### Task List (in order of execution)
 
 #### Task 5a: Add `scripts/` package (NEW directory)
 Copy from toolkit. These files are identical across toolkit and ai-p2sh, pure additions.
-- `scripts/__init__.py` (use toolkit version with `thunderChannel`/`thunderExpiring` names)
+- `scripts/__init__.py` (use toolkit version with `paymentChannel`/`paymentChannelExpiring` names)
 - `scripts/channels/__init__.py`
-- `scripts/channels/lock.py` (171 lines — thunder channel locking scripts)
+- `scripts/channels/lock.py` (171 lines — payment channel locking scripts)
 - `scripts/channels/unlock.py` (30 lines)
 - `scripts/mining/__init__.py`
 - `scripts/mining/lock.py` (412 lines — timelock mining scripts)
@@ -422,7 +422,7 @@ breaking anything.
 
 **Risk: Low** — additive change.
 
-#### Task 5d: Add thunder channel methods to `evrmore/wallet.py`
+#### Task 5d: Add payment channel methods to `evrmore/wallet.py`
 This is the big one. We need to ADD toolkit's ~362 new lines to satorilib's wallet.py.
 
 Specifically, add these methods (from toolkit) **without modifying** existing satorilib code:
@@ -439,22 +439,22 @@ Specifically, add these methods (from toolkit) **without modifying** existing sa
 - `_compileCurrencyChangeOutput()` — add `changeAddress` param
 - `_compileSatoriChangeOutput()` — add `changeAddress` param
 
-**New thunder methods to ADD:**
-- `produceThunderChannel()`
-- `produceThunderChannelFromScript()`
-- `produceThunderChannelCurrencyFromScript()`
-- `produceThunderExpiringFromScript()`
-- `produceThunderExpiringCurrencyFromScript()`
-- `thunderChannelTransaction()`
-- `thunderChannelRecallTransaction()`
-- `thunderChannelMultisigTransactionStart()`
-- `thunderChannelMultisigTransactionMiddle()`
-- `thunderChannelMultisigTransactionEnd()`
-- `thunderChannelCurrencyTransaction()`
-- `thunderChannelRecallCurrencyTransaction()`
-- `thunderChannelMultisigCurrencyTransactionStart()`
-- `thunderChannelMultisigCurrencyTransactionMiddle()`
-- `thunderChannelMultisigCurrencyTransactionEnd()`
+**New payment channel methods to ADD:**
+- `producePaymentChannel()`
+- `producePaymentChannelFromScript()`
+- `producePaymentChannelCurrencyFromScript()`
+- `producePaymentChannelExpiringFromScript()`
+- `producePaymentChannelExpiringCurrencyFromScript()`
+- `paymentChannelTransaction()`
+- `paymentChannelRecallTransaction()`
+- `paymentChannelMultisigTransactionStart()`
+- `paymentChannelMultisigTransactionMiddle()`
+- `paymentChannelMultisigTransactionEnd()`
+- `paymentChannelCurrencyTransaction()`
+- `paymentChannelRecallCurrencyTransaction()`
+- `paymentChannelMultisigCurrencyTransactionStart()`
+- `paymentChannelMultisigCurrencyTransactionMiddle()`
+- `paymentChannelMultisigCurrencyTransactionEnd()`
 
 **REMOVE (present in satorilib, inherited from ai-p2sh prototype):**
 - `createP2SHTransaction()` — example code with `raise Exception`
@@ -495,5 +495,5 @@ Add it to satorilib's top-level `sign.py`.
 2. **5b** (utils/) — no dependencies, purely additive
 3. **5f** (signForPubkey) — small, no dependencies
 4. **5c** (__init__.py) — depends on 5a existing
-5. **5d** (evrmore/wallet.py thunder methods) — the main event
+5. **5d** (evrmore/wallet.py payment channel methods) — the main event
 6. **5e** (base wallet.py naming fix) — do last, needs most careful review

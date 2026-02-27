@@ -296,7 +296,7 @@ Same fix as ravencoin: adds `x[1:].startswith(expected)` fallback. Also removes 
 
 **Satorilib:** Only `_compileSatoriOutputs(satsByAddress: dict)` — dict-only, no kwargs.
 
-All satorilib callers pass dicts. Thunder methods wrap single outputs as `{address: sats}`.
+All satorilib callers pass dicts. Payment channel methods wrap single outputs as `{address: sats}`.
 
 **Category: intentional divergence (acceptable — all callers use dict form).**
 
@@ -334,21 +334,21 @@ Satorilib calls `_compileSatoriOutputs({address: sats})` (dict); toolkit calls `
 
 **Category: intentional divergence (satorilib more consolidated).**
 
-### 4.11 Thunder channel methods — naming differences
+### 4.11 Payment channel methods — naming differences
 
 ```diff
 # toolkit import:
 -from ...scripts.channels.lock import thunderChannelExpiring
 # satorilib import:
-+from ...scripts.channels.lock import thunderExpiring
++from ...scripts.channels.lock import paymentChannelExpiring
 ```
 
 Method naming:
 | Toolkit | Satorilib |
 |---------|-----------|
-| `produceThunderExpiring(...)` | `produceThunderChannelCurrency(...)` |
-| `return self.produceThunderChannel(...)` | `return self.produceThunderChannelFromScript(...)` |
-| `return self.produceThunderChannelCurrency(...)` | `return self.produceThunderChannelCurrencyFromScript(...)` |
+| `produceThunderExpiring(...)` | `producePaymentChannelCurrency(...)` |
+| `return self.produceThunderChannel(...)` | `return self.producePaymentChannelFromScript(...)` |
+| `return self.produceThunderChannelCurrency(...)` | `return self.producePaymentChannelCurrencyFromScript(...)` |
 
 Docstrings updated accordingly.
 
@@ -394,7 +394,7 @@ All toolkit functionality has been ported. Every remaining difference falls into
 - `produceMultiTimeMultisig()` docstring correction
 - Mundo fee rework (`satoriOnlyPartialSimple`, `sendAllPartialSimple`, `completeSimplePartial`)
 - `sendIndirect()` fully activated in `typicalNeuronTransaction()`
-- Thunder channel duplicate method name fix + missing `return` statements
+- Payment channel duplicate method name fix + missing `return` statements
 - `_compileCurrencyOutputs` loop variable shadowing fix
 - `_compileCurrencyChangeOutput` flexible `inputCount`/`outputCount` params
 - `P2SHRedeemScripts` class
