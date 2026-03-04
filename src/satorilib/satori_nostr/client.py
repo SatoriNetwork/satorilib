@@ -217,13 +217,16 @@ class SatoriNostr:
     # PROVIDER APIs
     # ========================================================================
 
-    async def announce_datastream(self, metadata: DatastreamMetadata) -> str:
+    async def announce_datastream(self, metadata: DatastreamMetadata, deleted: bool = False) -> str:
         """Announce a datastream (provider).
 
         Publishes stream metadata as a kind 34600 event (public, discoverable).
+        When deleted=True, publishes a tombstone that replaces the original
+        announcement and signals to other nodes that this stream is gone.
 
         Args:
             metadata: Datastream metadata to announce
+            deleted: If True, publish a tombstone (status=deleted) event
 
         Returns:
             Event ID of the announcement
@@ -240,21 +243,24 @@ class SatoriNostr:
             Tag.parse(["satori", "datastream"]),
         ]
 
-        # Add topic tags for discovery
-        for tag in metadata.tags:
-            tags.append(Tag.parse(["t", tag]))
+        if deleted:
+            tags.append(Tag.parse(["status", "deleted"]))
+        else:
+            # Add topic tags for discovery
+            for tag in metadata.tags:
+                tags.append(Tag.parse(["t", tag]))
 
-        # Add stream topic tag
-        tags.append(Tag.parse(["stream", compute_stream_topic_tag(metadata.stream_name)]))
+            # Add stream topic tag
+            tags.append(Tag.parse(["stream", compute_stream_topic_tag(metadata.stream_name)]))
 
-        # Add source lineage tags if this stream predicts another
-        if metadata.metadata:
-            src_stream = metadata.metadata.get('source_stream_name')
-            src_pubkey = metadata.metadata.get('source_provider_pubkey')
-            if src_stream:
-                tags.append(Tag.parse(["source_stream", src_stream]))
-            if src_pubkey:
-                tags.append(Tag.parse(["source_pubkey", src_pubkey]))
+            # Add source lineage tags if this stream predicts another
+            if metadata.metadata:
+                src_stream = metadata.metadata.get('source_stream_name')
+                src_pubkey = metadata.metadata.get('source_provider_pubkey')
+                if src_stream:
+                    tags.append(Tag.parse(["source_stream", src_stream]))
+                if src_pubkey:
+                    tags.append(Tag.parse(["source_pubkey", src_pubkey]))
 
         # Build event with metadata as content
         builder = EventBuilder(
@@ -265,8 +271,9 @@ class SatoriNostr:
         # Publish to relays
         output = await self._client.send_event_builder(builder)
 
-        # Track announced stream
-        self._announced_streams[metadata.stream_name] = metadata
+        if not deleted:
+            # Track announced stream
+            self._announced_streams[metadata.stream_name] = metadata
 
         return output.id.to_hex()
 
@@ -454,10 +461,14 @@ class SatoriNostr:
             filter_builder, timedelta(seconds=10))
         events = events_obj.to_vec()
 
-        # Parse metadata from events
+        # Parse metadata from events, skipping tombstoned (deleted) streams
         datastreams = []
         for event in events:
             try:
+                # Skip events with status=deleted tag (tombstones)
+                tag_values = [t.as_vec() for t in event.tags().to_vec()]
+                if ["status", "deleted"] in tag_values:
+                    continue
                 metadata = DatastreamMetadata.from_json(event.content())
                 datastreams.append(metadata)
             except Exception as e:
