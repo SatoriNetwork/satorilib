@@ -65,7 +65,7 @@ class SatoriServerClient(object):
     def _getChallenge(self):
         """Get challenge token from central-lite or fallback to timestamp."""
         try:
-            response = requests.get(self.url + '/api/v1/auth/challenge')
+            response = requests.get(self.url + '/api/v1/auth/challenge', timeout=10)
             if response.status_code == 200:
                 challenge = response.json().get('challenge')
                 if challenge:
@@ -102,7 +102,8 @@ class SatoriServerClient(object):
                     'wallet-pubkey': self.wallet.pubkey,
                     'message': challenge,
                     'signature': signature
-                }
+                },
+                timeout=15
             )
             response.raise_for_status()
 
@@ -125,7 +126,8 @@ class SatoriServerClient(object):
         try:
             response = requests.post(
                 self.url + '/api/v1/auth/refresh',
-                headers={'Authorization': f'Bearer {self._refresh_token}'}
+                headers={'Authorization': f'Bearer {self._refresh_token}'},
+                timeout=15
             )
             response.raise_for_status()
 
@@ -202,7 +204,8 @@ class SatoriServerClient(object):
             r = function(
                 (url or self.url) + endpoint,
                 headers=headers,
-                data=payload)
+                data=payload,
+                timeout=15)
 
             # If 401, token might be expired - retry once with fresh token
             if r.status_code == 401:
@@ -212,15 +215,14 @@ class SatoriServerClient(object):
                 r = function(
                     (url or self.url) + endpoint,
                     headers=headers,
-                    data=payload)
+                    data=payload,
+                    timeout=15)
 
-            if raiseForStatus:
-                try:
-                    r.raise_for_status()
-                except requests.exceptions.HTTPError as e:
-                    logging.error('authenticated server err:',
-                                  r.text, e, color='red')
-                    r.raise_for_status()
+            if raiseForStatus and not r.ok:
+                logging.error(
+                    'authenticated server err:',
+                    r.text, r.status_code, color='red')
+                r.raise_for_status()
 
             logging.info(
                 f'incoming: {endpoint}',
@@ -229,8 +231,19 @@ class SatoriServerClient(object):
             return r
 
         except Exception as e:
-            # Fall back to legacy challenge-response on JWT failure
-            logging.warning(f'JWT auth failed, falling back to legacy: {e}')
+            # Fall back to legacy challenge-response.
+            # This handles both JWT auth failures and transient server errors
+            # (the legacy call is effectively a retry with different auth headers).
+            is_server_error = (
+                isinstance(e, requests.exceptions.HTTPError)
+                and e.response is not None
+                and e.response.status_code >= 500)
+            if is_server_error:
+                logging.warning(
+                    f'Server error on {endpoint} ({e.response.status_code}), '
+                    f'retrying with legacy auth')
+            else:
+                logging.warning(f'JWT auth failed, falling back to legacy: {e}')
 
             headers = {
                 **(useWallet or self.wallet).authPayload(
@@ -246,14 +259,13 @@ class SatoriServerClient(object):
             r = function(
                 (url or self.url) + endpoint,
                 headers=headers,
-                data=payload)
-            if raiseForStatus:
-                try:
-                    r.raise_for_status()
-                except requests.exceptions.HTTPError as e:
-                    logging.error('authenticated server err:',
-                                  r.text, e, color='red')
-                    r.raise_for_status()
+                data=payload,
+                timeout=15)
+            if raiseForStatus and not r.ok:
+                logging.error(
+                    'authenticated server err:',
+                    r.text, r.status_code, color='red')
+                r.raise_for_status()
             logging.info(
                 f'incoming: {endpoint}',
                 r.text[0:40], f'{"..." if len(r.text) > 40 else ""}',
