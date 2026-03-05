@@ -220,8 +220,7 @@ class SatoriServerClient(object):
 
             if raiseForStatus and not r.ok:
                 logging.error(
-                    'authenticated server err:',
-                    r.text, r.status_code, color='red')
+                    f'server error on {endpoint}: {r.status_code}', color='red')
                 r.raise_for_status()
 
             logging.info(
@@ -240,7 +239,7 @@ class SatoriServerClient(object):
                 and e.response.status_code >= 500)
             if is_server_error:
                 logging.warning(
-                    f'Server error on {endpoint} ({e.response.status_code}), '
+                    f'server error on {endpoint} ({e.response.status_code}), '
                     f'retrying with legacy auth')
             else:
                 logging.warning(f'JWT auth failed, falling back to legacy: {e}')
@@ -263,8 +262,7 @@ class SatoriServerClient(object):
                 timeout=15)
             if raiseForStatus and not r.ok:
                 logging.error(
-                    'authenticated server err:',
-                    r.text, r.status_code, color='red')
+                    f'server error on {endpoint}: {r.status_code}', color='red')
                 r.raise_for_status()
             logging.info(
                 f'incoming: {endpoint}',
