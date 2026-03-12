@@ -669,9 +669,11 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         tx: CMutableTransaction,
         redeemScript: bytes,
         vinIndex: int = 0,
-        sighashFlag: int = SIGHASH_ALL,
+        sighashFlag: int = SIGHASH_ANYONECANPAY | SIGHASH_ALL,
     ) -> bytes:
-        ''' produces a signature for the input at vinIndex '''
+        ''' produces a signature for the input at vinIndex.
+        Default ANYONECANPAY allows the receiver to add an EVR input for fees.
+        '''
         sighash = SignatureHash(redeemScript, tx, vinIndex, sighashFlag)
         sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
         return sig
@@ -1192,7 +1194,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             tx=tx,
             redeemScript=redeemScript,
             vinIndex=vinIndex,
-            **({sighashFlag: sighashFlag} if sighashFlag else {}))
+            **({'sighashFlag': sighashFlag} if sighashFlag else {}))
 
     def paymentChannelMultisigTransactionEnd(
         self,
@@ -1369,7 +1371,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
             tx=tx,
             redeemScript=redeemScript,
             vinIndex=vinIndex,
-            **({sighashFlag: sighashFlag} if sighashFlag else {}))
+            **({'sighashFlag': sighashFlag} if sighashFlag else {}))
 
     def paymentChannelMultisigCurrencyTransactionEnd(
         self,

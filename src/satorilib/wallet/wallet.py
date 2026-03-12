@@ -1784,7 +1784,7 @@ class Wallet(WalletBase):
             tx=tx,
             redeemScript=redeemScript,
             vinIndex=vinIndex,
-            **({sighashFlag: sighashFlag} if sighashFlag else {}))
+            **({'sighashFlag': sighashFlag} if sighashFlag else {}))
 
     def multiTimeMultisigTransactionEnd(
         self,
@@ -1953,7 +1953,7 @@ class Wallet(WalletBase):
             tx=tx,
             redeemScript=redeemScript,
             vinIndex=vinIndex,
-            **({sighashFlag: sighashFlag} if sighashFlag else {}))
+            **({'sighashFlag': sighashFlag} if sighashFlag else {}))
 
     def multiTimeMultisigCurrencyTransactionEnd(
         self,
