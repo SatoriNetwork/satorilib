@@ -435,7 +435,22 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
     def _createPartialOriginatorSimple(self, txins: list, txinScripts: list, txouts: list) -> CMutableTransaction:
         ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
         Sender signs locking only the output at each input's index (their
-        change), allowing the receiver to add inputs and outputs. '''
+        change), allowing the receiver to add inputs and outputs.
+        Guarantees len(txouts) >= len(txins) by splitting the first output
+        if needed (SIGHASH_SINGLE requires an output at each input's index). '''
+        if len(txins) > len(txouts) and len(txouts) > 0:
+            # split the first output into enough pieces to cover all inputs
+            deficit = len(txins) - len(txouts)
+            first = txouts[0]
+            totalSats = first.nValue
+            splitCount = deficit + 1
+            perSplit = totalSats // splitCount
+            remainder = totalSats - (perSplit * splitCount)
+            splits = []
+            for j in range(splitCount):
+                sats = perSplit + (remainder if j == 0 else 0)
+                splits.append(CMutableTxOut(sats, first.scriptPubKey))
+            txouts = splits + txouts[1:]
         tx = CMutableTransaction(txins, txouts)
         for i, (txin, txinScriptPubKey) in enumerate(zip(txins, txinScripts)):
             self._signInput(

@@ -2,7 +2,7 @@ from typing import Union
 from ravencoin import SelectParams
 from ravencoin.wallet import P2PKHRavencoinAddress, CRavencoinAddress, CRavencoinSecret
 from ravencoin.core.scripteval import VerifyScript, SCRIPT_VERIFY_P2SH
-from ravencoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL, OP_RVN_ASSET, OP_DROP, OP_RETURN, SIGHASH_ANYONECANPAY
+from ravencoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL, OP_RVN_ASSET, OP_DROP, OP_RETURN, SIGHASH_ANYONECANPAY, SIGHASH_SINGLE
 from ravencoin.core import b2x, lx, COIN, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
 from ravencoin.core.scripteval import EvalScriptError
 from satorilib.electrumx import Electrumx
@@ -267,7 +267,21 @@ class RavencoinWallet(Wallet):
         return tx
 
     def _createPartialOriginatorSimple(self, txins: list, txinScripts: list, txouts: list) -> CMutableTransaction:
-        ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_ALL '''
+        ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
+        Guarantees len(txouts) >= len(txins) by splitting the first output
+        if needed (SIGHASH_SINGLE requires an output at each input's index). '''
+        if len(txins) > len(txouts) and len(txouts) > 0:
+            deficit = len(txins) - len(txouts)
+            first = txouts[0]
+            totalSats = first.nValue
+            splitCount = deficit + 1
+            perSplit = totalSats // splitCount
+            remainder = totalSats - (perSplit * splitCount)
+            splits = []
+            for j in range(splitCount):
+                sats = perSplit + (remainder if j == 0 else 0)
+                splits.append(CMutableTxOut(sats, first.scriptPubKey))
+            txouts = splits + txouts[1:]
         tx = CMutableTransaction(txins, txouts)
         for i, (txin, txinScriptPubKey) in enumerate(zip(txins, txinScripts)):
             self._signInput(
@@ -275,15 +289,14 @@ class RavencoinWallet(Wallet):
                 i=i,
                 txin=txin,
                 txinScriptPubKey=txinScriptPubKey,
-                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_ALL)
+                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_SINGLE)
         return tx
 
     def _createPartialCompleterSimple(self, txins: list, txinScripts: list, tx: CMutableTransaction) -> CMutableTransaction:
         '''
-        simple version SIGHASH_ANYONECANPAY | SIGHASH_ALL
+        simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
         just adds an input for the RVN fee and signs it
         '''
-        # how does the final thing not have currency in?
         tx.vin.extend(txins)
         startIndex = len(tx.vin) - len(txins)
         for i, (txin, txinScriptPubKey) in (
@@ -294,7 +307,7 @@ class RavencoinWallet(Wallet):
                 i=i,
                 txin=txin,
                 txinScriptPubKey=txinScriptPubKey,
-                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_ALL)
+                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_SINGLE)
         return tx
 
     def _signInput(
