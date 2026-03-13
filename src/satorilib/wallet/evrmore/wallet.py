@@ -7,7 +7,7 @@ from evrmore.wallet import P2PKHEvrmoreAddress, CEvrmoreAddress, CEvrmoreSecret,
 from evrmore.core.scripteval import VerifyScript, SCRIPT_VERIFY_P2SH
 from evrmore.core.script import (
     CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL, 
-    OP_EVR_ASSET, OP_DROP, OP_RETURN, SIGHASH_ANYONECANPAY, OP_IF, OP_ELSE, OP_ENDIF, 
+    OP_EVR_ASSET, OP_DROP, OP_RETURN, SIGHASH_ANYONECANPAY, SIGHASH_SINGLE, OP_IF, OP_ELSE, OP_ENDIF,
     OP_CHECKMULTISIG, OP_CHECKLOCKTIMEVERIFY, OP_CHECKSEQUENCEVERIFY)
 from evrmore.core import b2lx, b2x, lx, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
 from evrmore.core.scripteval import EvalScriptError
@@ -433,23 +433,23 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         return tx
 
     def _createPartialOriginatorSimple(self, txins: list, txinScripts: list, txouts: list) -> CMutableTransaction:
-        ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_ALL '''
+        ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
+        Sender signs locking only the output at each input's index (their
+        change), allowing the receiver to add inputs and outputs. '''
         tx = CMutableTransaction(txins, txouts)
-        # logging.debug('txins', txins)
-        # logging.debug('txouts', txouts)
         for i, (txin, txinScriptPubKey) in enumerate(zip(txins, txinScripts)):
             self._signInput(
                 tx=tx,
                 i=i,
                 txin=txin,
                 txinScriptPubKey=txinScriptPubKey,
-                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_ALL)
+                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_SINGLE)
         return tx
 
     def _createPartialCompleterSimple(self, txins: list, txinScripts: list, tx: CMutableTransaction) -> CMutableTransaction:
         '''
-        simple version SIGHASH_ANYONECANPAY | SIGHASH_ALL
-        just adds an input for the RVN fee and signs it
+        simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
+        just adds an input for the EVR fee and signs it
         '''
         # todo, verify the last two outputs at somepoint before this
         tx.vin.extend(txins)
@@ -462,7 +462,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 i=i,
                 txin=txin,
                 txinScriptPubKey=txinScriptPubKey,
-                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_ALL)
+                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_SINGLE)
         return tx
 
     def _signInput(
@@ -669,10 +669,12 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         tx: CMutableTransaction,
         redeemScript: bytes,
         vinIndex: int = 0,
-        sighashFlag: int = SIGHASH_ANYONECANPAY | SIGHASH_ALL,
+        sighashFlag: int = SIGHASH_ANYONECANPAY | SIGHASH_SINGLE,
     ) -> bytes:
         ''' produces a signature for the input at vinIndex.
-        Default ANYONECANPAY allows the receiver to add an EVR input for fees.
+        Default SIGHASH_SINGLE|ANYONECANPAY: locks only the output at this
+        input's index (sender's change), allowing receiver to add inputs
+        (for fees) and outputs (for fee change).
         '''
         sighash = SignatureHash(redeemScript, tx, vinIndex, sighashFlag)
         sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
