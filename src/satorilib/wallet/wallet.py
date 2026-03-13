@@ -2360,20 +2360,10 @@ class Wallet(WalletBase):
         to be completed. he who completes the transaction will pay the rvn fee
         and collect the satori fee. we will probably broadcast as a json object.
 
-        Because the Sighash_single is too complex this simple version was
-        created which allows others (ie the server) to add inputs but not
-        outputs. This makes it simple because we can add the output on our side
-        and keep the rest of the code basically the same while using
-        SIGHASH_ANYONECANPAY | SIGHASH_ALL
-
-        dealing with the limitations of this signature we need to provide all
-        outputs on our end, includeing the rvn fee output. so that needs to be
-        an input to this function. Which means we have to call the server ask it
-        to reserve an input for us and ask it how much that input is going to
-        be, then include the Raven output change back to the server. Then when
-        the server gets this transaction it will have to inspect it to verify
-        that the last output is the raven fee change and that the second to last
-        output is the Satori fee for itself.
+        Uses SIGHASH_ANYONECANPAY | SIGHASH_SINGLE so the sender's signature
+        locks only the output at the same index as each signed input (the
+        sender's change). This allows the completer to add both inputs (for
+        fees) and outputs (for fee change).
         '''
         if completerAddress is None or changeAddress is None or feeSatsReserved == 0:
             raise TransactionFailure(
@@ -2461,20 +2451,10 @@ class Wallet(WalletBase):
         to be completed. he who completes the transaction will pay the evr fee
         and collect the satori fee. we will probably broadcast as a json object.
 
-        Because the Sighash_single is too complex this simple version was
-        created which allows others (ie the server) to add inputs but not
-        outputs. This makes it simple because we can add the output on our side
-        and keep the rest of the code basically the same while using
-        SIGHASH_ANYONECANPAY | SIGHASH_ALL
-
-        dealing with the limitations of this signature we need to provide all
-        outputs on our end, including the evr fee change output. so that needs
-        to be an input to this function. Which means we have to call the server
-        ask it to reserve an input for us and ask it how much that input is
-        going to be, then include the evr output change back to the server. Then
-        when the server gets this transaction it will have to inspect it to
-        verify that the last output is the evr fee change and that the second to
-        last output is the Satori fee for itself.
+        Uses SIGHASH_ANYONECANPAY | SIGHASH_SINGLE so the sender's signature
+        locks only the output at the same index as each signed input (the
+        sender's change). This allows the completer to add both inputs (for
+        fees) and outputs (for fee change).
         '''
         if completerAddress is None or changeAddress is None or feeSatsReserved == 0:
             raise TransactionFailure('need completer details')
