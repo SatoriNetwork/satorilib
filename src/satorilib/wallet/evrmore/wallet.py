@@ -433,24 +433,8 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         return tx
 
     def _createPartialOriginatorSimple(self, txins: list, txinScripts: list, txouts: list) -> CMutableTransaction:
-        ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
-        Sender signs locking only the output at each input's index (their
-        change), allowing the receiver to add inputs and outputs.
-        Guarantees len(txouts) >= len(txins) by splitting the first output
-        if needed (SIGHASH_SINGLE requires an output at each input's index). '''
-        if len(txins) > len(txouts) and len(txouts) > 0:
-            # split the first output into enough pieces to cover all inputs
-            deficit = len(txins) - len(txouts)
-            first = txouts[0]
-            totalSats = first.nValue
-            splitCount = deficit + 1
-            perSplit = totalSats // splitCount
-            remainder = totalSats - (perSplit * splitCount)
-            splits = []
-            for j in range(splitCount):
-                sats = perSplit + (remainder if j == 0 else 0)
-                splits.append(CMutableTxOut(sats, first.scriptPubKey))
-            txouts = splits + txouts[1:]
+        ''' simple version SIGHASH_ANYONECANPAY | SIGHASH_ALL
+        Used for Mundo transactions where the completer adds inputs only. '''
         tx = CMutableTransaction(txins, txouts)
         for i, (txin, txinScriptPubKey) in enumerate(zip(txins, txinScripts)):
             self._signInput(
@@ -458,12 +442,12 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 i=i,
                 txin=txin,
                 txinScriptPubKey=txinScriptPubKey,
-                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_SINGLE)
+                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_ALL)
         return tx
 
     def _createPartialCompleterSimple(self, txins: list, txinScripts: list, tx: CMutableTransaction) -> CMutableTransaction:
         '''
-        simple version SIGHASH_ANYONECANPAY | SIGHASH_SINGLE
+        simple version SIGHASH_ANYONECANPAY | SIGHASH_ALL
         just adds an input for the EVR fee and signs it
         '''
         # todo, verify the last two outputs at somepoint before this
@@ -477,7 +461,7 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 i=i,
                 txin=txin,
                 txinScriptPubKey=txinScriptPubKey,
-                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_SINGLE)
+                sighashFlag=SIGHASH_ANYONECANPAY | SIGHASH_ALL)
         return tx
 
     def _signInput(
