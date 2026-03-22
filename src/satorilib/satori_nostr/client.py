@@ -33,12 +33,15 @@ from .models import (
     DatastreamObservation,
     SubscriptionAnnouncement,
     PaymentNotification,
+    ChannelCommitment,
     InboundObservation,
     InboundPayment,
+    InboundCommitment,
     KIND_DATASTREAM_ANNOUNCE,
     KIND_DATASTREAM_DATA,
     KIND_SUBSCRIPTION_ANNOUNCE,
     KIND_PAYMENT,
+    KIND_CHANNEL_COMMITMENT,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -134,6 +137,7 @@ class SatoriNostr:
         # Event queues for async iteration
         self._observation_queue: asyncio.Queue[InboundObservation] = asyncio.Queue()
         self._payment_queue: asyncio.Queue[InboundPayment] = asyncio.Queue()
+        self._commitment_queue: asyncio.Queue[InboundCommitment] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -142,6 +146,8 @@ class SatoriNostr:
             "payments_sent": 0,
             "payments_received": 0,
             "subscriptions_announced": 0,
+            "commitments_sent": 0,
+            "commitments_received": 0,
         }
 
         # Background tasks
@@ -699,6 +705,141 @@ class SatoriNostr:
         return output.id.to_hex()
 
     # ========================================================================
+    # CHANNEL COMMITMENT APIs
+    # ========================================================================
+
+    async def publish_commitment(self, commitment: ChannelCommitment) -> str:
+        """Publish a partial transaction for the receiver to complete (buyer/sender).
+
+        Publishes a kind 34604 parameterized replaceable event keyed by p2sh_address,
+        so the relay keeps only the latest commitment per channel. Tagged with the
+        receiver's pubkey so Nostr pushes it to them immediately.
+
+        Replaces Mantra's POST /channel/commitment.
+
+        Args:
+            commitment: The channel commitment containing the partial tx and sender sigs
+
+        Returns:
+            Event ID of the published commitment
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        tags = [
+            Tag.parse(["d", commitment.p2sh_address]),       # Replaceable: latest per channel
+            Tag.parse(["p", commitment.receiver_pubkey]),    # Push to receiver
+            Tag.parse(["satori", "commitment"]),
+        ]
+
+        builder = EventBuilder(
+            Kind(KIND_CHANNEL_COMMITMENT),
+            commitment.to_json(),
+        ).tags(tags)
+
+        output = await self._client.send_event_builder(builder)
+        self._stats["commitments_sent"] += 1
+        return output.id.to_hex()
+
+    async def get_commitment(self, p2sh_address: str) -> ChannelCommitment | None:
+        """Fetch the latest commitment for a specific channel.
+
+        Replaces Mantra's GET /channel/commitment/:p2shAddress.
+
+        Args:
+            p2sh_address: The P2SH address identifying the channel
+
+        Returns:
+            The latest ChannelCommitment, or None if not found
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        filter_obj = (
+            Filter()
+            .kind(Kind(KIND_CHANNEL_COMMITMENT))
+            .identifier(p2sh_address)
+            .limit(1)
+        )
+
+        events_obj = await self._client.fetch_events(filter_obj, timedelta(seconds=10))
+        events = events_obj.to_vec()
+
+        if not events:
+            return None
+
+        try:
+            return ChannelCommitment.from_json(events[0].content())
+        except Exception as e:
+            print(f"Error parsing channel commitment: {e}")
+            return None
+
+    async def remove_commitment(self, p2sh_address: str) -> str:
+        """Signal that a channel commitment has been claimed and broadcast.
+
+        Publishes a tombstone event (same kind, same d-tag, empty content with
+        'claimed' tag) that replaces the pending commitment on the relay.
+
+        Replaces Mantra's DELETE /channel/commitment/:p2shAddress.
+
+        Args:
+            p2sh_address: The P2SH address identifying the channel
+
+        Returns:
+            Event ID of the tombstone event
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        tags = [
+            Tag.parse(["d", p2sh_address]),
+            Tag.parse(["action", "claimed"]),
+            Tag.parse(["satori", "commitment"]),
+        ]
+
+        builder = EventBuilder(
+            Kind(KIND_CHANNEL_COMMITMENT),
+            "",
+        ).tags(tags)
+
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def commitments(self) -> AsyncIterator[InboundCommitment]:
+        """Receive incoming channel commitments as they arrive (seller/receiver).
+
+        Yields commitments pushed by buyers in real time. No polling required —
+        Nostr delivers events tagged with this client's pubkey immediately.
+
+        Replaces Mantra's GET /channel/commitments/:receiverPubkey (polling).
+
+        Yields:
+            InboundCommitment instances as they arrive
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running:
+            raise RuntimeError("Client not running")
+
+        while self._running:
+            try:
+                commitment = await asyncio.wait_for(
+                    self._commitment_queue.get(), timeout=1.0)
+                yield commitment
+            except asyncio.TimeoutError:
+                continue
+
+    # ========================================================================
     # CONSUMER APIs (async iteration)
     # ========================================================================
 
@@ -881,6 +1022,7 @@ class SatoriNostr:
             Kind(KIND_DATASTREAM_DATA),
             Kind(KIND_SUBSCRIPTION_ANNOUNCE),
             Kind(KIND_PAYMENT),
+            Kind(KIND_CHANNEL_COMMITMENT),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -924,6 +1066,9 @@ class SatoriNostr:
         elif kind == KIND_SUBSCRIPTION_ANNOUNCE:
             # Subscription announcement (public)
             await self._handle_subscription_event(event)
+        elif kind == KIND_CHANNEL_COMMITMENT:
+            # Channel commitment — partial tx from buyer to seller
+            await self._handle_commitment_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1008,3 +1153,34 @@ class SatoriNostr:
 
         except Exception as e:
             print(f"Error handling subscription event: {e}")
+
+    async def _handle_commitment_event(self, event: Event) -> None:
+        """Handle a channel commitment event (kind 34604).
+
+        Only processes commitments addressed to this client (receiver_pubkey matches
+        our pubkey). Tombstone events (empty content, action=claimed) are silently
+        dropped — they exist only to evict the old commitment from the relay.
+        """
+        try:
+            content = event.content()
+
+            # Tombstone — the commitment was claimed; nothing to act on
+            if not content:
+                return
+
+            commitment = ChannelCommitment.from_json(content)
+
+            # Only process commitments addressed to us
+            if commitment.receiver_pubkey != self.pubkey():
+                return
+
+            inbound = InboundCommitment(
+                commitment=commitment,
+                event_id=event.id().to_hex(),
+            )
+
+            await self._commitment_queue.put(inbound)
+            self._stats["commitments_received"] += 1
+
+        except Exception as e:
+            print(f"Error handling commitment event: {e}")
