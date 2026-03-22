@@ -211,6 +211,53 @@ class PaymentNotification:
 
 
 @dataclass
+class ChannelCommitment:
+    """A partial transaction published by the buyer (sender) for the seller to complete.
+
+    Published as kind 34604 event (parameterized replaceable, d=p2sh_address).
+    The relay keeps only the latest commitment per channel, replacing stale ones.
+    Tagged with receiver_pubkey so the push delivery goes to the right party.
+
+    Mirrors the Commitment object in Mantra's channel relay service.
+    """
+    p2sh_address: str           # Channel identifier (P2SH address of the 2-of-2 script)
+    sender_pubkey: str          # Buyer's public key (hex)
+    receiver_pubkey: str        # Seller's public key (hex)
+    partial_tx_hex: str         # Half-signed transaction (hex-encoded)
+    sender_sigs: list[str]      # Hex-encoded signatures, one per P2SH input
+    pay_amount_sats: int        # Amount being paid to receiver this round
+    remainder_sats: int         # Change back to the channel (for the next round)
+    fee: int                    # Transaction fee in sats
+    timestamp: int              # Unix timestamp when published
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelCommitment":
+        """Deserialize from dictionary."""
+        return cls(**data)
+
+    def to_json(self) -> str:
+        """Serialize to JSON string."""
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "ChannelCommitment":
+        """Deserialize from JSON string."""
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundCommitment:
+    """A received channel commitment after parsing."""
+    commitment: ChannelCommitment   # The commitment data
+    event_id: str                   # Nostr event ID
+    raw_event: dict[str, Any] | None = None  # Optional raw Nostr event
+
+
+@dataclass
 class InboundObservation:
     """A received observation after decryption and parsing."""
     stream_name: str                    # Which stream it's from
@@ -246,6 +293,7 @@ KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (paramete
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
 KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized replaceable, d=stream_name)
 KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name)
+KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
 
 
 # Standard cadence values (in seconds)
