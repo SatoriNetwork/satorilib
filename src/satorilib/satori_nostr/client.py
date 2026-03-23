@@ -34,14 +34,17 @@ from .models import (
     SubscriptionAnnouncement,
     PaymentNotification,
     ChannelCommitment,
+    ChannelOpen,
     InboundObservation,
     InboundPayment,
     InboundCommitment,
+    InboundChannelOpen,
     KIND_DATASTREAM_ANNOUNCE,
     KIND_DATASTREAM_DATA,
     KIND_SUBSCRIPTION_ANNOUNCE,
     KIND_PAYMENT,
     KIND_CHANNEL_COMMITMENT,
+    KIND_CHANNEL_OPEN,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -138,6 +141,7 @@ class SatoriNostr:
         self._observation_queue: asyncio.Queue[InboundObservation] = asyncio.Queue()
         self._payment_queue: asyncio.Queue[InboundPayment] = asyncio.Queue()
         self._commitment_queue: asyncio.Queue[InboundCommitment] = asyncio.Queue()
+        self._channel_open_queue: asyncio.Queue[InboundChannelOpen] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -803,6 +807,62 @@ class SatoriNostr:
         output = await self._client.send_event_builder(builder)
         return output.id.to_hex()
 
+    async def publish_channel_open(
+        self,
+        channel_open: ChannelOpen,
+        receiver_nostr_pubkey: str,
+    ) -> str:
+        """Announce a new channel to the receiver via Nostr (sender side).
+
+        Publishes a kind 34605 parameterized replaceable event so the receiver
+        can save the channel to their DB and process future commitments.
+
+        Args:
+            channel_open: Channel metadata (EVR wallet pubkeys, redeem script, etc.)
+            receiver_nostr_pubkey: Receiver's Nostr pubkey (hex) for push routing
+
+        Returns:
+            Event ID of the announcement
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        tags = [
+            Tag.parse(["d", channel_open.p2sh_address]),
+            Tag.parse(["p", receiver_nostr_pubkey]),
+            Tag.parse(["satori", "channel_open"]),
+        ]
+
+        builder = EventBuilder(
+            Kind(KIND_CHANNEL_OPEN),
+            channel_open.to_json(),
+        ).tags(tags)
+
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def channel_opens(self) -> AsyncIterator[InboundChannelOpen]:
+        """Receive incoming channel open announcements (receiver side).
+
+        Yields channel open announcements pushed by senders in real time.
+
+        Yields:
+            InboundChannelOpen instances as they arrive
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running:
+            raise RuntimeError("Client not running")
+
+        while self._running:
+            try:
+                item = await asyncio.wait_for(
+                    self._channel_open_queue.get(), timeout=1.0)
+                yield item
+            except asyncio.TimeoutError:
+                continue
+
     async def commitments(self) -> AsyncIterator[InboundCommitment]:
         """Receive incoming channel commitments as they arrive (seller/receiver).
 
@@ -1012,6 +1072,7 @@ class SatoriNostr:
             Kind(KIND_SUBSCRIPTION_ANNOUNCE),
             Kind(KIND_PAYMENT),
             Kind(KIND_CHANNEL_COMMITMENT),
+            Kind(KIND_CHANNEL_OPEN),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1058,6 +1119,9 @@ class SatoriNostr:
         elif kind == KIND_CHANNEL_COMMITMENT:
             # Channel commitment — partial tx from buyer to seller
             await self._handle_commitment_event(event)
+        elif kind == KIND_CHANNEL_OPEN:
+            # Channel open announcement — sender informs receiver of new channel
+            await self._handle_channel_open_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1173,3 +1237,22 @@ class SatoriNostr:
 
         except Exception as e:
             print(f"Error handling commitment event: {e}")
+
+    async def _handle_channel_open_event(self, event: Event) -> None:
+        """Handle a channel open announcement event (kind 34605).
+
+        Queues all valid open announcements. The consumer (_channelHandleOpen
+        in start.py) filters to those addressed to this node's EVR wallet pubkey.
+        """
+        try:
+            content = event.content()
+            if not content:
+                return
+            channel_open = ChannelOpen.from_json(content)
+            inbound = InboundChannelOpen(
+                channel_open=channel_open,
+                event_id=event.id().to_hex(),
+            )
+            await self._channel_open_queue.put(inbound)
+        except Exception as e:
+            print(f"Error handling channel open event: {e}")
