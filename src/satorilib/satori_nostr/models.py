@@ -229,6 +229,7 @@ class ChannelCommitment:
     remainder_sats: int         # Change back to the channel (for the next round)
     fee: int                    # Transaction fee in sats
     timestamp: int              # Unix timestamp when published
+    stream_name: str = ''       # Which stream this payment is for
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""

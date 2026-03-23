@@ -407,12 +407,15 @@ class SatoriNostr:
         if stream_name not in self._subscribers:
             self._subscribers[stream_name] = {}
 
+        existing = self._subscribers[stream_name].get(subscriber_pubkey)
         self._subscribers[stream_name][subscriber_pubkey] = SubscriberState(
             subscriber_pubkey=subscriber_pubkey,
             stream_name=stream_name,
-            last_paid_seq=None,
+            # Preserve last_paid_seq so re-subscriptions (e.g. on reconnect)
+            # don't revoke access the subscriber has already paid for.
+            last_paid_seq=existing.last_paid_seq if existing else None,
             payment_channel=payment_channel,
-            subscribed_at=int(time.time()),
+            subscribed_at=existing.subscribed_at if existing else int(time.time()),
         )
 
     def record_payment(
@@ -743,6 +746,8 @@ class SatoriNostr:
             Tag.parse(["p", commitment.receiver_pubkey]),    # Push to receiver
             Tag.parse(["satori", "commitment"]),
         ]
+        if commitment.stream_name:
+            tags.append(Tag.parse(["stream", commitment.stream_name]))
 
         builder = EventBuilder(
             Kind(KIND_CHANNEL_COMMITMENT),
