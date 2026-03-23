@@ -146,6 +146,7 @@ class SatoriNostr:
         self._commitment_queue: asyncio.Queue[InboundCommitment] = asyncio.Queue()
         self._channel_open_queue: asyncio.Queue[InboundChannelOpen] = asyncio.Queue()
         self._settlement_queue: asyncio.Queue[InboundChannelSettlement] = asyncio.Queue()
+        self._tombstone_queue: asyncio.Queue[str] = asyncio.Queue()  # p2sh_address strings
 
         # Statistics
         self._stats = {
@@ -1246,18 +1247,47 @@ class SatoriNostr:
         except Exception as e:
             print(f"Error handling subscription event: {e}")
 
+    async def tombstones(self) -> AsyncIterator[str]:
+        """Receive p2sh_address strings for tombstoned commitments (sender side).
+
+        Yields the p2sh_address of each channel whose commitment has been
+        replaced by a tombstone on the relay, indicating the receiver claimed.
+        Used as a fallback reset when KIND_CHANNEL_SETTLED is not received.
+
+        Yields:
+            p2sh_address strings as they arrive
+        """
+        if not self._running:
+            raise RuntimeError("Client not running")
+        while self._running:
+            try:
+                p2sh = await asyncio.wait_for(
+                    self._tombstone_queue.get(), timeout=1.0)
+                yield p2sh
+            except asyncio.TimeoutError:
+                continue
+
     async def _handle_commitment_event(self, event: Event) -> None:
         """Handle a channel commitment event (kind 34604).
 
-        Only processes commitments addressed to this client (receiver_pubkey matches
-        our pubkey). Tombstone events (empty content, action=claimed) are silently
-        dropped — they exist only to evict the old commitment from the relay.
+        Tombstone events (empty content) are queued to _tombstone_queue so
+        the sender can use them as a fallback reset if KIND_CHANNEL_SETTLED
+        was not received. All other commitments are filtered to those addressed
+        to this client (receiver_pubkey matches our pubkey).
         """
         try:
             content = event.content()
 
-            # Tombstone — the commitment was claimed; nothing to act on
+            # Tombstone — queue the p2sh_address as a fallback reset signal
             if not content:
+                try:
+                    for tag in event.tags().to_vec():
+                        tag_vec = tag.as_vec()
+                        if len(tag_vec) >= 2 and tag_vec[0] == 'd':
+                            await self._tombstone_queue.put(tag_vec[1])
+                            break
+                except Exception:
+                    pass
                 return
 
             commitment = ChannelCommitment.from_json(content)
