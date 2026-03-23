@@ -306,6 +306,7 @@ class ChannelOpen:
     blocks: int | None      # CSV timeout in blocks (mutually exclusive with minutes)
     minutes: float | None   # CSV timeout in minutes (mutually exclusive with blocks)
     timestamp: int          # Unix timestamp when opened
+    sender_nostr_pubkey: str = ''  # Sender's Nostr pubkey so receiver can notify them
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -330,6 +331,44 @@ class InboundChannelOpen:
     raw_event: dict[str, Any] | None = None
 
 
+@dataclass
+class ChannelSettlement:
+    """Notification from receiver to sender after a channel claim.
+
+    Published as kind 34606 event (parameterized replaceable, d=p2sh_address).
+    Tagged with sender_nostr_pubkey so Nostr pushes it to the sender.
+    Contains the new P2SH funding UTXO so sender can continue paying.
+    If new_funding_vout == -1, the channel was fully drained (no change output).
+    """
+    p2sh_address: str       # Channel identifier
+    claim_txid: str         # The broadcast claim tx
+    new_funding_vout: int   # Output index of the P2SH change (-1 if fully drained)
+    new_locked_sats: int    # New UTXO value (0 if fully drained)
+    timestamp: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelSettlement":
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "ChannelSettlement":
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundChannelSettlement:
+    """A received channel settlement notification after parsing."""
+    settlement: ChannelSettlement
+    event_id: str
+    raw_event: dict[str, Any] | None = None
+
+
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
@@ -337,6 +376,7 @@ KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized r
 KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name)
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
+KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
 
 
 # Standard cadence values (in seconds)

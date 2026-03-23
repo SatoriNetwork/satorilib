@@ -35,16 +35,19 @@ from .models import (
     PaymentNotification,
     ChannelCommitment,
     ChannelOpen,
+    ChannelSettlement,
     InboundObservation,
     InboundPayment,
     InboundCommitment,
     InboundChannelOpen,
+    InboundChannelSettlement,
     KIND_DATASTREAM_ANNOUNCE,
     KIND_DATASTREAM_DATA,
     KIND_SUBSCRIPTION_ANNOUNCE,
     KIND_PAYMENT,
     KIND_CHANNEL_COMMITMENT,
     KIND_CHANNEL_OPEN,
+    KIND_CHANNEL_SETTLED,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -142,6 +145,7 @@ class SatoriNostr:
         self._payment_queue: asyncio.Queue[InboundPayment] = asyncio.Queue()
         self._commitment_queue: asyncio.Queue[InboundCommitment] = asyncio.Queue()
         self._channel_open_queue: asyncio.Queue[InboundChannelOpen] = asyncio.Queue()
+        self._settlement_queue: asyncio.Queue[InboundChannelSettlement] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -863,6 +867,38 @@ class SatoriNostr:
             except asyncio.TimeoutError:
                 continue
 
+    async def publish_settlement(
+        self,
+        settlement: ChannelSettlement,
+        sender_nostr_pubkey: str,
+    ) -> str:
+        """Notify the sender that a channel was claimed and provide new UTXO info."""
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        tags = [
+            Tag.parse(["d", settlement.p2sh_address]),
+            Tag.parse(["p", sender_nostr_pubkey]),
+            Tag.parse(["satori", "settlement"]),
+        ]
+        builder = EventBuilder(
+            Kind(KIND_CHANNEL_SETTLED),
+            settlement.to_json(),
+        ).tags(tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def settlements(self) -> AsyncIterator[InboundChannelSettlement]:
+        """Receive incoming channel settlement notifications (sender side)."""
+        if not self._running:
+            raise RuntimeError("Client not running")
+        while self._running:
+            try:
+                item = await asyncio.wait_for(
+                    self._settlement_queue.get(), timeout=1.0)
+                yield item
+            except asyncio.TimeoutError:
+                continue
+
     async def commitments(self) -> AsyncIterator[InboundCommitment]:
         """Receive incoming channel commitments as they arrive (seller/receiver).
 
@@ -1073,6 +1109,7 @@ class SatoriNostr:
             Kind(KIND_PAYMENT),
             Kind(KIND_CHANNEL_COMMITMENT),
             Kind(KIND_CHANNEL_OPEN),
+            Kind(KIND_CHANNEL_SETTLED),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1122,6 +1159,8 @@ class SatoriNostr:
         elif kind == KIND_CHANNEL_OPEN:
             # Channel open announcement — sender informs receiver of new channel
             await self._handle_channel_open_event(event)
+        elif kind == KIND_CHANNEL_SETTLED:
+            await self._handle_settlement_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1256,3 +1295,18 @@ class SatoriNostr:
             await self._channel_open_queue.put(inbound)
         except Exception as e:
             print(f"Error handling channel open event: {e}")
+
+    async def _handle_settlement_event(self, event: Event) -> None:
+        """Handle a channel settlement notification event (kind 34606)."""
+        try:
+            content = event.content()
+            if not content:
+                return
+            settlement = ChannelSettlement.from_json(content)
+            inbound = InboundChannelSettlement(
+                settlement=settlement,
+                event_id=event.id().to_hex(),
+            )
+            await self._settlement_queue.put(inbound)
+        except Exception as e:
+            print(f"Error handling settlement event: {e}")
