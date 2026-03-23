@@ -288,12 +288,55 @@ class SatoriNostrConfig:
     dedupe_db_path: str | None = None    # SQLite path for dedupe (None = in-memory)
 
 
+@dataclass
+class ChannelOpen:
+    """Channel open announcement published by the sender to inform the receiver.
+
+    Published as kind 34605 event (parameterized replaceable, d=p2sh_address).
+    Tagged with receiver_nostr_pubkey so Nostr pushes it to the right party.
+    The receiver saves this to their DB so they can process future commitments.
+    """
+    p2sh_address: str       # Channel identifier
+    sender_pubkey: str      # Sender's EVR wallet pubkey (hex)
+    receiver_pubkey: str    # Receiver's EVR wallet pubkey (hex)
+    redeem_script: str      # Hex-encoded P2SH redeem script
+    funding_txid: str       # Funding transaction ID
+    funding_vout: int       # Funding output index
+    locked_sats: int        # Amount locked in the channel
+    blocks: int | None      # CSV timeout in blocks (mutually exclusive with minutes)
+    minutes: float | None   # CSV timeout in minutes (mutually exclusive with blocks)
+    timestamp: int          # Unix timestamp when opened
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelOpen":
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "ChannelOpen":
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundChannelOpen:
+    """A received channel open announcement after parsing."""
+    channel_open: ChannelOpen
+    event_id: str
+    raw_event: dict[str, Any] | None = None
+
+
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
 KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized replaceable, d=stream_name)
 KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name)
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
+KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 
 
 # Standard cadence values (in seconds)
