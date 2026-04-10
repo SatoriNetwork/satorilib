@@ -370,6 +370,59 @@ class InboundChannelSettlement:
     raw_event: dict[str, Any] | None = None
 
 
+@dataclass
+class CompetitionAnnouncement:
+    """Public announcement of a prediction competition hosted on a data stream.
+
+    Published as kind 34607 event (parameterized replaceable,
+    d=stream_name:stream_provider_pubkey:host_pubkey).
+
+    Re-publishing replaces the previous announcement. Setting active=False
+    (or publishing empty content) closes the competition.
+
+    pay_per_obs_sats is the total the host promises to pay per observation,
+    distributed across predictors however the host chooses. paid_predictors
+    and competing_predictors are intent metadata — social signals, not
+    enforced constraints.
+    """
+    stream_name: str
+    stream_provider_pubkey: str
+    host_pubkey: str
+    pay_per_obs_sats: int
+    paid_predictors: int
+    competing_predictors: int
+    scoring_metric: str
+    horizon: int
+    active: bool
+    timestamp: int
+    scoring_params: dict[str, Any] | None = None
+
+    def __post_init__(self):
+        if self.scoring_params is None:
+            self.scoring_params = {}
+
+    def d_tag(self) -> str:
+        return f'{self.stream_name}:{self.stream_provider_pubkey}:{self.host_pubkey}'
+
+    def close(self) -> 'CompetitionAnnouncement':
+        import dataclasses
+        return dataclasses.replace(self, active=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'CompetitionAnnouncement':
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'CompetitionAnnouncement':
+        return cls.from_dict(json.loads(json_str))
+
+
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
@@ -378,6 +431,7 @@ KIND_PAYMENT = 34603                # Payment notification (parameterized replac
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
+KIND_COMPETITION_ANNOUNCE = 34607   # Competition announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
 
 
 # Standard cadence values (in seconds)
