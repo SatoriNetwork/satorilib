@@ -25,6 +25,8 @@ from nostr_sdk import (
     NostrSigner,
     RelayUrl,
     HandleNotification,
+    SingleLetterTag,
+    Alphabet,
 )
 
 from .models import (
@@ -36,6 +38,7 @@ from .models import (
     ChannelCommitment,
     ChannelOpen,
     ChannelSettlement,
+    CompetitionAnnouncement,
     InboundObservation,
     InboundPayment,
     InboundCommitment,
@@ -48,6 +51,7 @@ from .models import (
     KIND_CHANNEL_COMMITMENT,
     KIND_CHANNEL_OPEN,
     KIND_CHANNEL_SETTLED,
+    KIND_COMPETITION_ANNOUNCE,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -291,6 +295,103 @@ class SatoriNostr:
             self._announced_streams[metadata.stream_name] = metadata
 
         return output.id.to_hex()
+
+    async def announce_competition(self, competition: CompetitionAnnouncement) -> str:
+        """Announce a prediction competition (host).
+
+        Publishes competition metadata as a kind 34607 parameterized replaceable
+        event. Re-publishing with the same d-tag replaces the previous announcement.
+
+        Args:
+            competition: Competition announcement to publish
+
+        Returns:
+            Event ID of the announcement
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        tags = [
+            Tag.parse(["d", competition.d_tag()]),
+            Tag.parse(["satori", "competition"]),
+            Tag.parse(["s", competition.stream_name]),
+            Tag.parse(["p", competition.stream_provider_pubkey]),
+        ]
+
+        builder = EventBuilder(
+            Kind(KIND_COMPETITION_ANNOUNCE),
+            competition.to_json(),
+        ).tags(tags)
+
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def close_competition(self, competition: CompetitionAnnouncement) -> str:
+        """Close a competition by publishing an inactive replacement (host).
+
+        Args:
+            competition: The competition to close (active flag will be set False)
+
+        Returns:
+            Event ID of the closing event
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        return await self.announce_competition(competition.close())
+
+    async def discover_competitions(
+        self,
+        stream_name: str | None = None,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> list[CompetitionAnnouncement]:
+        """Discover available prediction competitions (predictor/observer).
+
+        Queries relays for competition announcements (kind 34607).
+
+        Args:
+            stream_name: Optional stream name to filter by
+            active_only: If True, only return competitions with active=True
+            limit: Maximum number of results
+
+        Returns:
+            List of CompetitionAnnouncement
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        filter_builder = Filter().kind(Kind(KIND_COMPETITION_ANNOUNCE)).limit(limit)
+        if stream_name:
+            filter_builder = filter_builder.custom_tag(
+                SingleLetterTag.lowercase(Alphabet.S), stream_name)
+
+        events_obj = await self._client.fetch_events(
+            filter_builder, timedelta(seconds=10))
+        events = events_obj.to_vec()
+
+        # Deduplicate by d-tag keeping the latest event (parameterized replaceable)
+        latest: dict[str, tuple[int, CompetitionAnnouncement]] = {}
+        for event in events:
+            try:
+                c = CompetitionAnnouncement.from_json(event.content())
+                d = c.d_tag()
+                ts = event.created_at().as_secs()
+                if d not in latest or ts > latest[d][0]:
+                    latest[d] = (ts, c)
+            except Exception as e:
+                print(f"Error parsing competition announcement: {e}")
+
+        competitions = [c for _, c in latest.values()]
+        if active_only:
+            competitions = [c for c in competitions if c.active]
+        return competitions
 
     async def publish_observation(
         self,
