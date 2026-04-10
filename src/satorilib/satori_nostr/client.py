@@ -39,6 +39,8 @@ from .models import (
     ChannelOpen,
     ChannelSettlement,
     CompetitionAnnouncement,
+    PredictionSubmission,
+    InboundPrediction,
     InboundObservation,
     InboundPayment,
     InboundCommitment,
@@ -52,6 +54,7 @@ from .models import (
     KIND_CHANNEL_OPEN,
     KIND_CHANNEL_SETTLED,
     KIND_COMPETITION_ANNOUNCE,
+    KIND_PREDICTION,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -151,6 +154,7 @@ class SatoriNostr:
         self._channel_open_queue: asyncio.Queue[InboundChannelOpen] = asyncio.Queue()
         self._settlement_queue: asyncio.Queue[InboundChannelSettlement] = asyncio.Queue()
         self._tombstone_queue: asyncio.Queue[str] = asyncio.Queue()  # p2sh_address strings
+        self._prediction_queue: asyncio.Queue[InboundPrediction] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -376,13 +380,15 @@ class SatoriNostr:
             filter_builder, timedelta(seconds=10))
         events = events_obj.to_vec()
 
-        # Deduplicate by d-tag keeping the latest event (parameterized replaceable)
+        # Deduplicate by d-tag keeping the latest event (parameterized replaceable).
+        # Use content timestamp so close() (which bumps timestamp by 1) always wins
+        # over the original even when both Nostr events share the same created_at second.
         latest: dict[str, tuple[int, CompetitionAnnouncement]] = {}
         for event in events:
             try:
                 c = CompetitionAnnouncement.from_json(event.content())
                 d = c.d_tag()
-                ts = event.created_at().as_secs()
+                ts = c.timestamp  # content timestamp, not Nostr event created_at
                 if d not in latest or ts > latest[d][0]:
                     latest[d] = (ts, c)
             except Exception as e:
@@ -392,6 +398,72 @@ class SatoriNostr:
         if active_only:
             competitions = [c for c in competitions if c.active]
         return competitions
+
+    async def submit_prediction(
+        self,
+        stream_name: str,
+        stream_provider_pubkey: str,
+        host_pubkey: str,
+        seq_num: int,
+        predicted_value: float,
+    ) -> str:
+        """Submit a prediction to a competition host (predictor).
+
+        Sends an encrypted DM (kind 34608, NIP-04) directly to the host.
+        Not broadcast publicly — only the host can decrypt it.
+
+        Args:
+            stream_name: Stream being predicted
+            stream_provider_pubkey: Producer of the stream
+            host_pubkey: Competition host's Nostr pubkey
+            seq_num: Observation sequence number being predicted
+            predicted_value: The predictor's prediction
+
+        Returns:
+            Event ID
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        prediction = PredictionSubmission(
+            stream_name=stream_name,
+            stream_provider_pubkey=stream_provider_pubkey,
+            predictor_pubkey=self.pubkey(),
+            seq_num=seq_num,
+            predicted_value=predicted_value,
+            timestamp=int(time.time()),
+        )
+
+        host_pk = PublicKey.parse(host_pubkey)
+        from .encryption import encrypt_json
+        encrypted = encrypt_json(prediction.to_json(), host_pk, self._keys)
+
+        tags = [
+            Tag.parse(["p", host_pubkey]),
+            Tag.parse(["s", stream_name]),
+            Tag.parse(["provider", stream_provider_pubkey]),
+            Tag.parse(["seq", str(seq_num)]),
+        ]
+
+        builder = EventBuilder(Kind(KIND_PREDICTION), encrypted).tags(tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def incoming_predictions(self) -> AsyncIterator['InboundPrediction']:
+        """Receive incoming prediction submissions (host).
+
+        Yields InboundPrediction as predictors submit them.
+        """
+        while True:
+            try:
+                pred = await asyncio.wait_for(
+                    self._prediction_queue.get(), timeout=1.0)
+                yield pred
+            except asyncio.TimeoutError:
+                return
 
     async def publish_observation(
         self,
@@ -1228,6 +1300,7 @@ class SatoriNostr:
             Kind(KIND_CHANNEL_COMMITMENT),
             Kind(KIND_CHANNEL_OPEN),
             Kind(KIND_CHANNEL_SETTLED),
+            Kind(KIND_PREDICTION),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1279,6 +1352,8 @@ class SatoriNostr:
             await self._handle_channel_open_event(event)
         elif kind == KIND_CHANNEL_SETTLED:
             await self._handle_settlement_event(event)
+        elif kind == KIND_PREDICTION:
+            await self._handle_prediction_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1346,6 +1421,25 @@ class SatoriNostr:
             print(f"Failed to decrypt payment: {e}")
         except Exception as e:
             print(f"Error handling payment event: {e}")
+
+    async def _handle_prediction_event(self, event: Event) -> None:
+        """Handle an incoming prediction submission (kind 34608, host side).
+
+        Only the host can decrypt — others silently discard.
+        """
+        try:
+            sender_pubkey = event.author()
+            from .encryption import decrypt_json, EncryptionError as _EncErr
+            prediction_json = decrypt_json(
+                event.content(), sender_pubkey, self._keys)
+            prediction = PredictionSubmission.from_json(prediction_json)
+            inbound = InboundPrediction(
+                prediction=prediction,
+                event_id=event.id().to_hex(),
+            )
+            await self._prediction_queue.put(inbound)
+        except Exception:
+            pass  # not the intended recipient — silently discard
 
     async def _handle_subscription_event(self, event: Event) -> None:
         """Handle a subscription announcement event (kind 34602)."""

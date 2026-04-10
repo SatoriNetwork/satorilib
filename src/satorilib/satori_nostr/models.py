@@ -406,7 +406,8 @@ class CompetitionAnnouncement:
 
     def close(self) -> 'CompetitionAnnouncement':
         import dataclasses
-        return dataclasses.replace(self, active=False)
+        return dataclasses.replace(
+            self, active=False, timestamp=self.timestamp + 1)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -423,6 +424,49 @@ class CompetitionAnnouncement:
         return cls.from_dict(json.loads(json_str))
 
 
+@dataclass
+class PredictionSubmission:
+    """A prediction sent from a predictor to a competition host.
+
+    Sent as kind 34608 encrypted DM (NIP-04) directly to the host.
+    Not broadcast publicly — only the host can read it.
+
+    The stream is uniquely identified by (stream_name, stream_provider_pubkey).
+    seq_num identifies which upcoming observation this predicts.
+    """
+    stream_name: str
+    stream_provider_pubkey: str
+    predictor_pubkey: str
+    seq_num: int
+    predicted_value: float
+    timestamp: int
+
+    def stream_key(self) -> str:
+        return f'{self.stream_name}:{self.stream_provider_pubkey}'
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'PredictionSubmission':
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'PredictionSubmission':
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundPrediction:
+    """A received prediction submission after parsing."""
+    prediction: PredictionSubmission
+    event_id: str
+    raw_event: dict[str, Any] | None = None
+
+
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
@@ -432,6 +476,7 @@ KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replacea
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
 KIND_COMPETITION_ANNOUNCE = 34607   # Competition announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
+KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
 
 
 # Standard cadence values (in seconds)
