@@ -35,6 +35,7 @@ class TestSubmitPrediction:
                 host_pubkey=host_keys.public_key().to_hex(),
                 seq_num=42,
                 predicted_value=67450.25,
+                predictor_wallet_pubkey='predictor_wallet_01',
             )
             assert isinstance(event_id, str)
             assert len(event_id) == 64
@@ -51,6 +52,7 @@ class TestSubmitPrediction:
                 host_pubkey=Keys.generate().public_key().to_hex(),
                 seq_num=1,
                 predicted_value=1.0,
+                predictor_wallet_pubkey='predictor_wallet_01',
             )
 
 
@@ -71,6 +73,7 @@ class TestIncomingPredictions:
                 host_pubkey=host_keys.public_key().to_hex(),
                 seq_num=42,
                 predicted_value=67450.25,
+                predictor_wallet_pubkey='predictor_wallet_01',
             )
             # Allow event to propagate
             await asyncio.sleep(0.3)
@@ -104,6 +107,7 @@ class TestIncomingPredictions:
                 host_pubkey=host_keys.public_key().to_hex(),
                 seq_num=42,
                 predicted_value=99.99,
+                predictor_wallet_pubkey='predictor_wallet_01',
             )
             await asyncio.sleep(0.3)
             # Eavesdropper queue should be empty — can't decrypt

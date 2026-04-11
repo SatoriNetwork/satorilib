@@ -406,6 +406,7 @@ class SatoriNostr:
         host_pubkey: str,
         seq_num: int,
         predicted_value: float,
+        predictor_wallet_pubkey: str,
     ) -> str:
         """Submit a prediction to a competition host (predictor).
 
@@ -418,6 +419,8 @@ class SatoriNostr:
             host_pubkey: Competition host's Nostr pubkey
             seq_num: Observation sequence number being predicted
             predicted_value: The predictor's prediction
+            predictor_wallet_pubkey: Predictor's EVRmore wallet pubkey, so the
+                host can open a payment channel and pay them
 
         Returns:
             Event ID
@@ -432,6 +435,7 @@ class SatoriNostr:
             stream_name=stream_name,
             stream_provider_pubkey=stream_provider_pubkey,
             predictor_pubkey=self.pubkey(),
+            predictor_wallet_pubkey=predictor_wallet_pubkey,
             seq_num=seq_num,
             predicted_value=predicted_value,
             timestamp=int(time.time()),

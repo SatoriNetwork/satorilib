@@ -25,6 +25,7 @@ class TestPredictionSubmission:
             stream_name='btc-price-usd',
             stream_provider_pubkey='aabbcc',
             predictor_pubkey='ddeeff',
+            predictor_wallet_pubkey='11aa22bb',
             seq_num=1042,
             predicted_value=67450.25,
             timestamp=1711234560,
@@ -34,6 +35,7 @@ class TestPredictionSubmission:
         assert sample.stream_name == 'btc-price-usd'
         assert sample.stream_provider_pubkey == 'aabbcc'
         assert sample.predictor_pubkey == 'ddeeff'
+        assert sample.predictor_wallet_pubkey == '11aa22bb'
         assert sample.seq_num == 1042
         assert sample.predicted_value == 67450.25
         assert sample.timestamp == 1711234560

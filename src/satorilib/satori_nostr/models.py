@@ -437,6 +437,7 @@ class PredictionSubmission:
     stream_name: str
     stream_provider_pubkey: str
     predictor_pubkey: str
+    predictor_wallet_pubkey: str
     seq_num: int
     predicted_value: float
     timestamp: int
