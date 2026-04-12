@@ -565,7 +565,7 @@ class Wallet(WalletBase):
             logging.debug('unable to get balances', e)
 
     def getStats(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         self.stats = self.electrumx.api.getStats()
         self.divisibility = Wallet.openSafely(self.stats, 'divisions', 8)
@@ -573,13 +573,13 @@ class Wallet(WalletBase):
         self.banner = self.electrumx.api.getBanner()
 
     def getTransactionHistory(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         self.transactionHistory = self.electrumx.api.getTransactionHistory(
             scripthash=self.scripthash)
 
     def getBalances(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         self.balances = self.electrumx.api.getBalances(scripthash=self.scripthash)
         self.currency = Balance.fromBalances('EVR', self.balances or {})
@@ -588,7 +588,7 @@ class Wallet(WalletBase):
             self.balanceUpdatedCallback(kind='wallet', evr=self.currency, satori=self.balance)
 
     def getReadyToSend(self, balance: bool = False, save: bool = True):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         try:
             self.maybeConnect()
@@ -621,7 +621,7 @@ class Wallet(WalletBase):
         NOTE: This will NOT work for P2SH addresses where the redeem script
         must be fetched from the chain. Use getReadyToSend for P2SH wallets.
         '''
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         try:
             self.maybeConnect()
@@ -662,7 +662,7 @@ class Wallet(WalletBase):
                 uc['scriptPubKey'] = scriptPubKeyHex
 
     def getUnspents(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         #import traceback
         #traceback.print_stack()
@@ -722,7 +722,7 @@ class Wallet(WalletBase):
             if callable(then):
                 then()
 
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return False
         if threaded:
             self.getUnspentTransactionsThread = threading.Thread(
@@ -737,7 +737,7 @@ class Wallet(WalletBase):
     ### Functions ##############################################################
 
     def appendTransaction(self, txid):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         #self.electrumx.ensureConnected()
         if txid not in self._transactions.keys():
