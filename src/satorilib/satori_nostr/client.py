@@ -897,17 +897,26 @@ class SatoriNostr:
     # CHANNEL COMMITMENT APIs
     # ========================================================================
 
-    async def publish_commitment(self, commitment: ChannelCommitment) -> str:
+    async def publish_commitment(
+        self,
+        commitment: ChannelCommitment,
+        receiver_nostr_pubkey: str,
+    ) -> str:
         """Publish a partial transaction for the receiver to complete (buyer/sender).
 
         Publishes a kind 34604 parameterized replaceable event keyed by p2sh_address,
         so the relay keeps only the latest commitment per channel. Tagged with the
-        receiver's pubkey so Nostr pushes it to them immediately.
+        receiver's Nostr pubkey so Nostr pushes it to them immediately.
+
+        Note: `commitment.receiver_pubkey` is the 33-byte EVR wallet pubkey used
+        to build the partial transaction; the Nostr `p` tag must be a 32-byte
+        x-only Nostr pubkey, which is a separate value and must be passed in.
 
         Replaces Mantra's POST /channel/commitment.
 
         Args:
             commitment: The channel commitment containing the partial tx and sender sigs
+            receiver_nostr_pubkey: Receiver's Nostr pubkey (hex) for push routing
 
         Returns:
             Event ID of the published commitment
@@ -920,7 +929,7 @@ class SatoriNostr:
 
         tags = [
             Tag.parse(["d", commitment.p2sh_address]),       # Replaceable: latest per channel
-            Tag.parse(["p", commitment.receiver_pubkey]),    # Push to receiver
+            Tag.parse(["p", receiver_nostr_pubkey]),         # Push to receiver (Nostr pubkey)
             Tag.parse(["satori", "commitment"]),
         ]
         if commitment.stream_name:
@@ -1487,8 +1496,12 @@ class SatoriNostr:
 
         Tombstone events (empty content) are queued to _tombstone_queue so
         the sender can use them as a fallback reset if KIND_CHANNEL_SETTLED
-        was not received. All other commitments are filtered to those addressed
-        to this client (receiver_pubkey matches our pubkey).
+        was not received. All other commitments are queued unconditionally —
+        the consumer (_channelProcessCommitment in start.py) filters them by
+        looking up the channel row by p2sh_address, which inherently proves
+        ownership. The library cannot filter here because the commitment
+        payload's receiver_pubkey is an EVR wallet pubkey (33 bytes) and
+        cannot be compared to self.pubkey() which is a Nostr pubkey (32 bytes).
         """
         try:
             content = event.content()
@@ -1506,10 +1519,6 @@ class SatoriNostr:
                 return
 
             commitment = ChannelCommitment.from_json(content)
-
-            # Only process commitments addressed to us
-            if commitment.receiver_pubkey != self.pubkey():
-                return
 
             inbound = InboundCommitment(
                 commitment=commitment,
