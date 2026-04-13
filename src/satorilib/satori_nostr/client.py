@@ -46,6 +46,8 @@ from .models import (
     InboundCommitment,
     InboundChannelOpen,
     InboundChannelSettlement,
+    AccessRequest,
+    InboundAccessRequest,
     KIND_DATASTREAM_ANNOUNCE,
     KIND_DATASTREAM_DATA,
     KIND_SUBSCRIPTION_ANNOUNCE,
@@ -55,6 +57,7 @@ from .models import (
     KIND_CHANNEL_SETTLED,
     KIND_COMPETITION_ANNOUNCE,
     KIND_PREDICTION,
+    KIND_ACCESS_REQUEST,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -155,6 +158,7 @@ class SatoriNostr:
         self._settlement_queue: asyncio.Queue[InboundChannelSettlement] = asyncio.Queue()
         self._tombstone_queue: asyncio.Queue[str] = asyncio.Queue()  # p2sh_address strings
         self._prediction_queue: asyncio.Queue[InboundPrediction] = asyncio.Queue()
+        self._access_request_queue: asyncio.Queue[InboundAccessRequest] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -284,6 +288,10 @@ class SatoriNostr:
                     tags.append(Tag.parse(["source_stream", src_stream]))
                 if src_pubkey:
                     tags.append(Tag.parse(["source_pubkey", src_pubkey]))
+
+            # Add approval-gated tag for private streams
+            if metadata.approval_required:
+                tags.append(Tag.parse(["approval_required", "true"]))
 
         # Build event with metadata as content
         builder = EventBuilder(
@@ -828,6 +836,66 @@ class SatoriNostr:
 
         return output.id.to_hex()
 
+    async def request_access(
+        self,
+        stream_name: str,
+        producer_pubkey: str,
+        message: str = '',
+    ) -> str:
+        """Request access to an approval-gated stream (subscriber).
+
+        Sends an encrypted DM (kind 34609, NIP-04) directly to the producer.
+        Not broadcast publicly — only the producer can decrypt it.
+
+        Args:
+            stream_name: Stream to request access to
+            producer_pubkey: Producer's Nostr pubkey (hex)
+            message: Optional message to the producer
+
+        Returns:
+            Event ID
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        req = AccessRequest(
+            stream_name=stream_name,
+            requester_pubkey=self.pubkey(),
+            producer_pubkey=producer_pubkey,
+            message=message,
+            timestamp=int(time.time()),
+        )
+
+        producer_pk = PublicKey.parse(producer_pubkey)
+        from .encryption import encrypt_json
+        encrypted = encrypt_json(req.to_json(), producer_pk, self._keys)
+
+        tags = [
+            Tag.parse(["p", producer_pubkey]),
+            Tag.parse(["s", stream_name]),
+            Tag.parse(["satori", "access_request"]),
+        ]
+
+        builder = EventBuilder(Kind(KIND_ACCESS_REQUEST), encrypted).tags(tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def incoming_access_requests(self) -> AsyncIterator['InboundAccessRequest']:
+        """Receive incoming access requests (producer).
+
+        Yields InboundAccessRequest as subscribers request access.
+        """
+        while True:
+            try:
+                req = await asyncio.wait_for(
+                    self._access_request_queue.get(), timeout=1.0)
+                yield req
+            except asyncio.TimeoutError:
+                return
+
     async def send_payment(
         self,
         provider_pubkey: str,
@@ -1314,6 +1382,7 @@ class SatoriNostr:
             Kind(KIND_CHANNEL_OPEN),
             Kind(KIND_CHANNEL_SETTLED),
             Kind(KIND_PREDICTION),
+            Kind(KIND_ACCESS_REQUEST),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1367,6 +1436,8 @@ class SatoriNostr:
             await self._handle_settlement_event(event)
         elif kind == KIND_PREDICTION:
             await self._handle_prediction_event(event)
+        elif kind == KIND_ACCESS_REQUEST:
+            await self._handle_access_request_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1564,3 +1635,22 @@ class SatoriNostr:
             await self._settlement_queue.put(inbound)
         except Exception as e:
             print(f"Error handling settlement event: {e}")
+
+    async def _handle_access_request_event(self, event: Event) -> None:
+        """Handle an incoming access request (kind 34609, producer side).
+
+        Only the producer can decrypt — others silently discard.
+        """
+        try:
+            sender_pubkey = event.author()
+            from .encryption import decrypt_json
+            request_json = decrypt_json(
+                event.content(), sender_pubkey, self._keys)
+            access_request = AccessRequest.from_json(request_json)
+            inbound = InboundAccessRequest(
+                access_request=access_request,
+                event_id=event.id().to_hex(),
+            )
+            await self._access_request_queue.put(inbound)
+        except Exception:
+            pass  # not the intended recipient — silently discard

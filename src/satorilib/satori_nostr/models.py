@@ -25,6 +25,7 @@ class DatastreamMetadata:
     created_at: int          # Unix timestamp when stream was first created
     cadence_seconds: int | None  # Expected seconds between observations (None = irregular)
     tags: list[str]          # Searchable tags (e.g., ["bitcoin", "price", "usd"])
+    approval_required: bool = False  # If True, subscribers must request and receive approval before receiving data
     metadata: dict[str, Any] | None = None  # Optional: source info, lineage, wallet pubkey, etc.
 
     def to_dict(self) -> dict[str, Any]:
@@ -468,6 +469,42 @@ class InboundPrediction:
     raw_event: dict[str, Any] | None = None
 
 
+@dataclass
+class AccessRequest:
+    """A request from a subscriber to access an approval-gated stream.
+
+    Sent as kind 34609 encrypted DM (NIP-04) directly to the producer.
+    Not broadcast publicly — only the producer can read it.
+    """
+    stream_name: str
+    requester_pubkey: str        # Subscriber requesting access (hex)
+    producer_pubkey: str         # Stream producer (hex)
+    message: str = ''            # Optional message from requester
+    timestamp: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'AccessRequest':
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'AccessRequest':
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundAccessRequest:
+    """A received access request after decryption."""
+    access_request: AccessRequest
+    event_id: str
+    raw_event: dict[str, Any] | None = None
+
+
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
@@ -478,6 +515,7 @@ KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized r
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
 KIND_COMPETITION_ANNOUNCE = 34607   # Competition announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
 KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
+KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams)
 
 
 # Standard cadence values (in seconds)
