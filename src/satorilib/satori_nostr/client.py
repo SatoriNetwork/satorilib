@@ -475,7 +475,7 @@ class SatoriNostr:
                     self._prediction_queue.get(), timeout=1.0)
                 yield pred
             except asyncio.TimeoutError:
-                return
+                continue
 
     async def publish_observation(
         self,
@@ -894,7 +894,7 @@ class SatoriNostr:
                     self._access_request_queue.get(), timeout=1.0)
                 yield req
             except asyncio.TimeoutError:
-                return
+                continue
 
     async def send_payment(
         self,
