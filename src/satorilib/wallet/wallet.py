@@ -182,7 +182,7 @@ class Wallet(WalletBase):
         self.banner = None
         self.currency: Balance = Balance.empty('EVR')
         self.balance: Balance = Balance.empty('SATORI')
-        self.divisibility = 0
+        self.divisibility = 8
         self.transactionHistory: list[dict] = []
         # TransactionStruct(*v)... {txid: (raw, vinVoutsTxs)}
         self._transactions: dict[str, tuple[dict, list[dict]]] = {}
