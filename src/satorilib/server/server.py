@@ -382,7 +382,7 @@ class SatoriServerClient(object):
             endpoint='/restore/stream',
             payload=payload or json.dumps(stream or {}))
 
-    def checkin(self, vaultInfo: dict = None, nostrPubkey: str = None) -> dict:
+    def checkin(self, vaultInfo: dict = None, nostrPubkey: str = None, version: str = None) -> dict:
         """Check in with central server. For central-lite, uses auth challenge system."""
         challenge = self._getChallenge()
 
@@ -398,6 +398,8 @@ class SatoriServerClient(object):
                     }
                     if nostrPubkey:
                         headers['nostr-pubkey'] = nostrPubkey
+                    if version:
+                        headers['neuron-version'] = version
                     register_response = requests.post(
                         self.url + '/api/v1/peer/register',
                         headers=headers,
