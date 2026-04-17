@@ -1036,7 +1036,7 @@ class Wallet(WalletBase):
         sats: int,
         randomly: bool = False
     ) -> tuple[list, int]:
-        unspentSatori = [x for x in self.unspentAssets if x.get(
+        unspentSatori = [x for x in (self.unspentAssets or []) if x.get(
             'name', x.get('asset')) == 'SATORI' and x.get('value') > 0]
         unspentSatori = sorted(unspentSatori, key=lambda x: x['value'])
         haveSatori = sum([x.get('value') for x in unspentSatori])
