@@ -976,7 +976,7 @@ class Wallet(WalletBase):
         feeOverride: Optional[int] = None,
     ) -> tuple[list, int]:
         unspentCurrency = [
-            x for x in self.unspentCurrency if x.get('value') > 0]
+            x for x in (self.unspentCurrency or []) if x.get('value') > 0]
         unspentCurrency = sorted(unspentCurrency, key=lambda x: x['value'])
         haveCurrency = sum([x.get('value') for x in unspentCurrency])
         if (haveCurrency < sats + (feeOverride or self.reserve)):
