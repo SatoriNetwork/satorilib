@@ -1141,7 +1141,19 @@ class Wallet(WalletBase):
         ''' serialize '''
 
     def broadcast(self, txHex: str) -> str:
-        return self.electrumx.api.broadcast(txHex)
+        """Broadcast a signed tx. Raises TransactionFailure if the node rejects
+        it (ElectrumX returns a {'code', 'message'} error dict). Returns the
+        plain txid string on success.
+        """
+        result = self.electrumx.api.broadcast(txHex)
+        if isinstance(result, dict) and result.get('code') is not None:
+            raise TransactionFailure(
+                f'broadcast rejected: {result.get("message", result)}')
+        if isinstance(result, (list, tuple)):
+            result = result[0] if result else ''
+        if result is None:
+            raise TransactionFailure('broadcast returned no result')
+        return str(result)
 
     ### Transactions ###########################################################
 
