@@ -355,6 +355,32 @@ class SatoriNostr:
         """
         return await self.announce_competition(competition.close())
 
+    async def publish_relay_list(self, relay_urls: list[str]) -> str:
+        """Publish a NIP-65 relay list metadata event (kind 10002).
+
+        This is a replaceable event — each publication overwrites the
+        previous one. Other clients and the central server can subscribe
+        to kind 10002 events from this node's pubkey to discover which
+        relays it uses.
+
+        Args:
+            relay_urls: List of relay WebSocket URLs to advertise.
+
+        Returns:
+            Event ID of the published relay list event.
+
+        Raises:
+            RuntimeError: If client not running.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        tags = [Tag.parse(["r", url]) for url in relay_urls]
+
+        builder = EventBuilder(Kind(10002), "").tags(tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
     async def discover_competitions(
         self,
         stream_name: str | None = None,
