@@ -111,7 +111,6 @@ class SatoriServerClient(object):
             self._access_token = data['access_token']
             self._refresh_token = data['refresh_token']
             self._token_expiry = datetime.now() + timedelta(seconds=data['expires_in'])
-            self.relayUrl = data.get('relay_url')
 
             logging.info('JWT login successful', print=True)
         except Exception as e:
@@ -456,13 +455,6 @@ class SatoriServerClient(object):
             function=requests.get,
             endpoint='/api/v1/peer/relays')
         return r.json()
-
-    def registerRelay(self, relayUrl: str) -> dict:
-        """Register a relay URL with central server for NIP-11 verification."""
-        return self._makeAuthenticatedCall(
-            function=requests.post,
-            endpoint='/api/v1/peer/relay',
-            payload=json.dumps({'relay_url': relayUrl}))
 
     def requestSimplePartial(self, network: str):
         ''' sends a satori partial transaction to the server '''
