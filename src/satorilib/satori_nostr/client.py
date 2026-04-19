@@ -742,6 +742,46 @@ class SatoriNostr:
             return obs.observation.timestamp
         return None
 
+    async def get_last_observation_event_time(
+        self, stream_name: str
+    ) -> int | None:
+        """Get the nostr event timestamp of the last observation event.
+
+        Reads only the public event header (created_at) — no decryption is
+        attempted. This means freshness can be inferred for paid streams as
+        well as free ones, as long as at least one observation event exists
+        on the relay (i.e. the publisher has at least one paying subscriber
+        for paid streams).
+
+        Note: this is the relay event timestamp, not the publisher's
+        observation.timestamp. They are typically within seconds of each
+        other but can differ if the publisher backdates observations.
+
+        Args:
+            stream_name: Stream identifier
+
+        Returns:
+            Unix epoch seconds of the most recent observation event, or
+            None if no observation events exist on the relay.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        filter_builder = (
+            Filter()
+            .kind(Kind(KIND_DATASTREAM_DATA))
+            .identifier(stream_name)
+            .limit(1)
+        )
+        events_obj = await self._client.fetch_events(
+            filter_builder, timedelta(seconds=10))
+        events = events_obj.to_vec()
+        if not events:
+            return None
+        try:
+            return events[0].created_at().as_secs()
+        except Exception:
+            return None
+
     async def discover_active_datastreams(
         self,
         tags: list[str] | None = None,
