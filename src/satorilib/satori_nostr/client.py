@@ -553,7 +553,14 @@ class SatoriNostr:
 
             # Encrypt and send per subscriber
             for sub_pubkey, sub_state in stream_subscribers.items():
-                if sub_state.last_paid_seq is not None and sub_state.last_paid_seq >= seq_num:
+                # Paid: subscriber has paid for this seq_num
+                paid = (sub_state.last_paid_seq is not None
+                        and sub_state.last_paid_seq >= seq_num)
+                # Free sample: new subscriber who hasn't received anything yet
+                free = (sub_state.last_paid_seq is None
+                        and stream_metadata.free_sample)
+
+                if paid or free:
                     try:
                         recipient_pubkey = PublicKey.parse(sub_pubkey)
                         encrypted = encrypt_observation(
@@ -574,6 +581,12 @@ class SatoriNostr:
                         output = await self._client.send_event_builder(builder)
                         event_ids.append(output.id.to_hex())
                         self._stats["observations_sent"] += 1
+
+                        # After sending the free sample, mark this seq as
+                        # granted so they don't get a second free one.
+                        # They must pay for seq_num+1 onwards.
+                        if free:
+                            sub_state.last_paid_seq = seq_num
 
                     except Exception as e:
                         print(f"Error sending to {sub_pubkey}: {e}")
