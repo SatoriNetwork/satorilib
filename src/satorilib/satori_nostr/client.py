@@ -25,6 +25,8 @@ from nostr_sdk import (
     NostrSigner,
     RelayUrl,
     HandleNotification,
+    SingleLetterTag,
+    Alphabet,
 )
 
 from .models import (
@@ -36,11 +38,16 @@ from .models import (
     ChannelCommitment,
     ChannelOpen,
     ChannelSettlement,
+    CompetitionAnnouncement,
+    PredictionSubmission,
+    InboundPrediction,
     InboundObservation,
     InboundPayment,
     InboundCommitment,
     InboundChannelOpen,
     InboundChannelSettlement,
+    AccessRequest,
+    InboundAccessRequest,
     KIND_DATASTREAM_ANNOUNCE,
     KIND_DATASTREAM_DATA,
     KIND_SUBSCRIPTION_ANNOUNCE,
@@ -48,6 +55,9 @@ from .models import (
     KIND_CHANNEL_COMMITMENT,
     KIND_CHANNEL_OPEN,
     KIND_CHANNEL_SETTLED,
+    KIND_COMPETITION_ANNOUNCE,
+    KIND_PREDICTION,
+    KIND_ACCESS_REQUEST,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -147,6 +157,8 @@ class SatoriNostr:
         self._channel_open_queue: asyncio.Queue[InboundChannelOpen] = asyncio.Queue()
         self._settlement_queue: asyncio.Queue[InboundChannelSettlement] = asyncio.Queue()
         self._tombstone_queue: asyncio.Queue[str] = asyncio.Queue()  # p2sh_address strings
+        self._prediction_queue: asyncio.Queue[InboundPrediction] = asyncio.Queue()
+        self._access_request_queue: asyncio.Queue[InboundAccessRequest] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -232,13 +244,16 @@ class SatoriNostr:
     # PROVIDER APIs
     # ========================================================================
 
-    async def announce_datastream(self, metadata: DatastreamMetadata) -> str:
+    async def announce_datastream(self, metadata: DatastreamMetadata, deleted: bool = False) -> str:
         """Announce a datastream (provider).
 
         Publishes stream metadata as a kind 34600 event (public, discoverable).
+        When deleted=True, publishes a tombstone that replaces the original
+        announcement and signals to other nodes that this stream is gone.
 
         Args:
             metadata: Datastream metadata to announce
+            deleted: If True, publish a tombstone (status=deleted) event
 
         Returns:
             Event ID of the announcement
@@ -255,21 +270,28 @@ class SatoriNostr:
             Tag.parse(["satori", "datastream"]),
         ]
 
-        # Add topic tags for discovery
-        for tag in metadata.tags:
-            tags.append(Tag.parse(["t", tag]))
+        if deleted:
+            tags.append(Tag.parse(["status", "deleted"]))
+        else:
+            # Add topic tags for discovery
+            for tag in metadata.tags:
+                tags.append(Tag.parse(["t", tag]))
 
-        # Add stream topic tag
-        tags.append(Tag.parse(["stream", compute_stream_topic_tag(metadata.stream_name)]))
+            # Add stream topic tag
+            tags.append(Tag.parse(["stream", compute_stream_topic_tag(metadata.stream_name)]))
 
-        # Add source lineage tags if this stream predicts another
-        if metadata.metadata:
-            src_stream = metadata.metadata.get('source_stream_name')
-            src_pubkey = metadata.metadata.get('source_provider_pubkey')
-            if src_stream:
-                tags.append(Tag.parse(["source_stream", src_stream]))
-            if src_pubkey:
-                tags.append(Tag.parse(["source_pubkey", src_pubkey]))
+            # Add source lineage tags if this stream predicts another
+            if metadata.metadata:
+                src_stream = metadata.metadata.get('source_stream_name')
+                src_pubkey = metadata.metadata.get('source_provider_pubkey')
+                if src_stream:
+                    tags.append(Tag.parse(["source_stream", src_stream]))
+                if src_pubkey:
+                    tags.append(Tag.parse(["source_pubkey", src_pubkey]))
+
+            # Add approval-gated tag for private streams
+            if metadata.approval_required:
+                tags.append(Tag.parse(["approval_required", "true"]))
 
         # Build event with metadata as content
         builder = EventBuilder(
@@ -280,10 +302,180 @@ class SatoriNostr:
         # Publish to relays
         output = await self._client.send_event_builder(builder)
 
-        # Track announced stream
-        self._announced_streams[metadata.stream_name] = metadata
+        if not deleted:
+            # Track announced stream
+            self._announced_streams[metadata.stream_name] = metadata
 
         return output.id.to_hex()
+
+    async def announce_competition(self, competition: CompetitionAnnouncement) -> str:
+        """Announce a prediction competition (host).
+
+        Publishes competition metadata as a kind 34607 parameterized replaceable
+        event. Re-publishing with the same d-tag replaces the previous announcement.
+
+        Args:
+            competition: Competition announcement to publish
+
+        Returns:
+            Event ID of the announcement
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        tags = [
+            Tag.parse(["d", competition.d_tag()]),
+            Tag.parse(["satori", "competition"]),
+            Tag.parse(["s", competition.stream_name]),
+            Tag.parse(["p", competition.stream_provider_pubkey]),
+        ]
+
+        builder = EventBuilder(
+            Kind(KIND_COMPETITION_ANNOUNCE),
+            competition.to_json(),
+        ).tags(tags)
+
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def close_competition(self, competition: CompetitionAnnouncement) -> str:
+        """Close a competition by publishing an inactive replacement (host).
+
+        Args:
+            competition: The competition to close (active flag will be set False)
+
+        Returns:
+            Event ID of the closing event
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        return await self.announce_competition(competition.close())
+
+    async def discover_competitions(
+        self,
+        stream_name: str | None = None,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> list[CompetitionAnnouncement]:
+        """Discover available prediction competitions (predictor/observer).
+
+        Queries relays for competition announcements (kind 34607).
+
+        Args:
+            stream_name: Optional stream name to filter by
+            active_only: If True, only return competitions with active=True
+            limit: Maximum number of results
+
+        Returns:
+            List of CompetitionAnnouncement
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        filter_builder = Filter().kind(Kind(KIND_COMPETITION_ANNOUNCE)).limit(limit)
+        if stream_name:
+            filter_builder = filter_builder.custom_tag(
+                SingleLetterTag.lowercase(Alphabet.S), stream_name)
+
+        events_obj = await self._client.fetch_events(
+            filter_builder, timedelta(seconds=10))
+        events = events_obj.to_vec()
+
+        # Deduplicate by d-tag keeping the latest event (parameterized replaceable).
+        # Use content timestamp so close() (which bumps timestamp by 1) always wins
+        # over the original even when both Nostr events share the same created_at second.
+        latest: dict[str, tuple[int, CompetitionAnnouncement]] = {}
+        for event in events:
+            try:
+                c = CompetitionAnnouncement.from_json(event.content())
+                d = c.d_tag()
+                ts = c.timestamp  # content timestamp, not Nostr event created_at
+                if d not in latest or ts > latest[d][0]:
+                    latest[d] = (ts, c)
+            except Exception as e:
+                print(f"Error parsing competition announcement: {e}")
+
+        competitions = [c for _, c in latest.values()]
+        if active_only:
+            competitions = [c for c in competitions if c.active]
+        return competitions
+
+    async def submit_prediction(
+        self,
+        stream_name: str,
+        stream_provider_pubkey: str,
+        host_pubkey: str,
+        seq_num: int,
+        predicted_value: float,
+        predictor_wallet_pubkey: str,
+    ) -> str:
+        """Submit a prediction to a competition host (predictor).
+
+        Sends an encrypted DM (kind 34608, NIP-04) directly to the host.
+        Not broadcast publicly — only the host can decrypt it.
+
+        Args:
+            stream_name: Stream being predicted
+            stream_provider_pubkey: Producer of the stream
+            host_pubkey: Competition host's Nostr pubkey
+            seq_num: Observation sequence number being predicted
+            predicted_value: The predictor's prediction
+            predictor_wallet_pubkey: Predictor's EVRmore wallet pubkey, so the
+                host can open a payment channel and pay them
+
+        Returns:
+            Event ID
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        prediction = PredictionSubmission(
+            stream_name=stream_name,
+            stream_provider_pubkey=stream_provider_pubkey,
+            predictor_pubkey=self.pubkey(),
+            predictor_wallet_pubkey=predictor_wallet_pubkey,
+            seq_num=seq_num,
+            predicted_value=predicted_value,
+            timestamp=int(time.time()),
+        )
+
+        host_pk = PublicKey.parse(host_pubkey)
+        from .encryption import encrypt_json
+        encrypted = encrypt_json(prediction.to_json(), host_pk, self._keys)
+
+        tags = [
+            Tag.parse(["p", host_pubkey]),
+            Tag.parse(["s", stream_name]),
+            Tag.parse(["provider", stream_provider_pubkey]),
+            Tag.parse(["seq", str(seq_num)]),
+        ]
+
+        builder = EventBuilder(Kind(KIND_PREDICTION), encrypted).tags(tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def incoming_predictions(self) -> AsyncIterator['InboundPrediction']:
+        """Receive incoming prediction submissions (host).
+
+        Yields InboundPrediction as predictors submit them.
+        """
+        while True:
+            try:
+                pred = await asyncio.wait_for(
+                    self._prediction_queue.get(), timeout=1.0)
+                yield pred
+            except asyncio.TimeoutError:
+                continue
 
     async def publish_observation(
         self,
@@ -341,9 +533,34 @@ class SatoriNostr:
             event_ids.append(output.id.to_hex())
             self._stats["observations_sent"] += 1
         else:
-            # Paid stream: encrypt and send per subscriber
+            # Paid stream: publish a public heartbeat so freshness checks
+            # (which query by d-tag) work even when there are no subscribers.
+            heartbeat_tags = [
+                Tag.parse(["d", stream_name]),
+                Tag.parse(["stream", stream_name]),
+                Tag.parse(["seq", str(seq_num)]),
+                Tag.parse(["satori", "observation"]),
+            ]
+            heartbeat_builder = EventBuilder(
+                Kind(KIND_DATASTREAM_DATA),
+                "",
+            ).tags(heartbeat_tags)
+            try:
+                output = await self._client.send_event_builder(heartbeat_builder)
+                event_ids.append(output.id.to_hex())
+            except Exception as e:
+                print(f"Error publishing heartbeat for {stream_name}: {e}")
+
+            # Encrypt and send per subscriber
             for sub_pubkey, sub_state in stream_subscribers.items():
-                if sub_state.last_paid_seq is not None and sub_state.last_paid_seq >= seq_num:
+                # Paid: subscriber has paid for this seq_num
+                paid = (sub_state.last_paid_seq is not None
+                        and sub_state.last_paid_seq >= seq_num)
+                # New subscriber who hasn't received anything yet — send
+                # one free observation to bootstrap the payment cycle.
+                free = sub_state.last_paid_seq is None
+
+                if paid or free:
                     try:
                         recipient_pubkey = PublicKey.parse(sub_pubkey)
                         encrypted = encrypt_observation(
@@ -364,6 +581,12 @@ class SatoriNostr:
                         output = await self._client.send_event_builder(builder)
                         event_ids.append(output.id.to_hex())
                         self._stats["observations_sent"] += 1
+
+                        # After sending the free sample, mark this seq as
+                        # granted so they don't get a second free one.
+                        # They must pay for seq_num+1 onwards.
+                        if free:
+                            sub_state.last_paid_seq = seq_num
 
                     except Exception as e:
                         print(f"Error sending to {sub_pubkey}: {e}")
@@ -400,12 +623,15 @@ class SatoriNostr:
         if stream_name not in self._subscribers:
             self._subscribers[stream_name] = {}
 
+        existing = self._subscribers[stream_name].get(subscriber_pubkey)
         self._subscribers[stream_name][subscriber_pubkey] = SubscriberState(
             subscriber_pubkey=subscriber_pubkey,
             stream_name=stream_name,
-            last_paid_seq=None,
+            # Preserve last_paid_seq so re-subscriptions (e.g. on reconnect)
+            # don't revoke access the subscriber has already paid for.
+            last_paid_seq=existing.last_paid_seq if existing else None,
             payment_channel=payment_channel,
-            subscribed_at=int(time.time()),
+            subscribed_at=existing.subscribed_at if existing else int(time.time()),
         )
 
     def record_payment(
@@ -469,10 +695,14 @@ class SatoriNostr:
             filter_builder, timedelta(seconds=10))
         events = events_obj.to_vec()
 
-        # Parse metadata from events
+        # Parse metadata from events, skipping tombstoned (deleted) streams
         datastreams = []
         for event in events:
             try:
+                # Skip events with status=deleted tag (tombstones)
+                tag_values = [t.as_vec() for t in event.tags().to_vec()]
+                if ["status", "deleted"] in tag_values:
+                    continue
                 metadata = DatastreamMetadata.from_json(event.content())
                 datastreams.append(metadata)
             except Exception as e:
@@ -518,6 +748,9 @@ class SatoriNostr:
         try:
             sender_pubkey = event.author()
             content = event.content()
+            # Empty content = heartbeat; no observation data to parse
+            if not content:
+                return None
             try:
                 observation = DatastreamObservation.from_json(content)
             except Exception:
@@ -542,6 +775,46 @@ class SatoriNostr:
         if obs and obs.observation:
             return obs.observation.timestamp
         return None
+
+    async def get_last_observation_event_time(
+        self, stream_name: str
+    ) -> int | None:
+        """Get the nostr event timestamp of the last observation event.
+
+        Reads only the public event header (created_at) — no decryption is
+        attempted. This means freshness can be inferred for paid streams as
+        well as free ones, as long as at least one observation event exists
+        on the relay (i.e. the publisher has at least one paying subscriber
+        for paid streams).
+
+        Note: this is the relay event timestamp, not the publisher's
+        observation.timestamp. They are typically within seconds of each
+        other but can differ if the publisher backdates observations.
+
+        Args:
+            stream_name: Stream identifier
+
+        Returns:
+            Unix epoch seconds of the most recent observation event, or
+            None if no observation events exist on the relay.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        filter_builder = (
+            Filter()
+            .kind(Kind(KIND_DATASTREAM_DATA))
+            .identifier(stream_name)
+            .limit(1)
+        )
+        events_obj = await self._client.fetch_events(
+            filter_builder, timedelta(seconds=10))
+        events = events_obj.to_vec()
+        if not events:
+            return None
+        try:
+            return events[0].created_at().as_secs()
+        except Exception:
+            return None
 
     async def discover_active_datastreams(
         self,
@@ -637,6 +910,66 @@ class SatoriNostr:
 
         return output.id.to_hex()
 
+    async def request_access(
+        self,
+        stream_name: str,
+        producer_pubkey: str,
+        message: str = '',
+    ) -> str:
+        """Request access to an approval-gated stream (subscriber).
+
+        Sends an encrypted DM (kind 34609, NIP-04) directly to the producer.
+        Not broadcast publicly — only the producer can decrypt it.
+
+        Args:
+            stream_name: Stream to request access to
+            producer_pubkey: Producer's Nostr pubkey (hex)
+            message: Optional message to the producer
+
+        Returns:
+            Event ID
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        req = AccessRequest(
+            stream_name=stream_name,
+            requester_pubkey=self.pubkey(),
+            producer_pubkey=producer_pubkey,
+            message=message,
+            timestamp=int(time.time()),
+        )
+
+        producer_pk = PublicKey.parse(producer_pubkey)
+        from .encryption import encrypt_json
+        encrypted = encrypt_json(req.to_json(), producer_pk, self._keys)
+
+        tags = [
+            Tag.parse(["p", producer_pubkey]),
+            Tag.parse(["s", stream_name]),
+            Tag.parse(["satori", "access_request"]),
+        ]
+
+        builder = EventBuilder(Kind(KIND_ACCESS_REQUEST), encrypted).tags(tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
+
+    async def incoming_access_requests(self) -> AsyncIterator['InboundAccessRequest']:
+        """Receive incoming access requests (producer).
+
+        Yields InboundAccessRequest as subscribers request access.
+        """
+        while True:
+            try:
+                req = await asyncio.wait_for(
+                    self._access_request_queue.get(), timeout=1.0)
+                yield req
+            except asyncio.TimeoutError:
+                continue
+
     async def send_payment(
         self,
         provider_pubkey: str,
@@ -706,17 +1039,26 @@ class SatoriNostr:
     # CHANNEL COMMITMENT APIs
     # ========================================================================
 
-    async def publish_commitment(self, commitment: ChannelCommitment) -> str:
+    async def publish_commitment(
+        self,
+        commitment: ChannelCommitment,
+        receiver_nostr_pubkey: str,
+    ) -> str:
         """Publish a partial transaction for the receiver to complete (buyer/sender).
 
         Publishes a kind 34604 parameterized replaceable event keyed by p2sh_address,
         so the relay keeps only the latest commitment per channel. Tagged with the
-        receiver's pubkey so Nostr pushes it to them immediately.
+        receiver's Nostr pubkey so Nostr pushes it to them immediately.
+
+        Note: `commitment.receiver_pubkey` is the 33-byte EVR wallet pubkey used
+        to build the partial transaction; the Nostr `p` tag must be a 32-byte
+        x-only Nostr pubkey, which is a separate value and must be passed in.
 
         Replaces Mantra's POST /channel/commitment.
 
         Args:
             commitment: The channel commitment containing the partial tx and sender sigs
+            receiver_nostr_pubkey: Receiver's Nostr pubkey (hex) for push routing
 
         Returns:
             Event ID of the published commitment
@@ -729,9 +1071,11 @@ class SatoriNostr:
 
         tags = [
             Tag.parse(["d", commitment.p2sh_address]),       # Replaceable: latest per channel
-            Tag.parse(["p", commitment.receiver_pubkey]),    # Push to receiver
+            Tag.parse(["p", receiver_nostr_pubkey]),         # Push to receiver (Nostr pubkey)
             Tag.parse(["satori", "commitment"]),
         ]
+        if commitment.stream_name:
+            tags.append(Tag.parse(["stream", commitment.stream_name]))
 
         builder = EventBuilder(
             Kind(KIND_CHANNEL_COMMITMENT),
@@ -1111,6 +1455,8 @@ class SatoriNostr:
             Kind(KIND_CHANNEL_COMMITMENT),
             Kind(KIND_CHANNEL_OPEN),
             Kind(KIND_CHANNEL_SETTLED),
+            Kind(KIND_PREDICTION),
+            Kind(KIND_ACCESS_REQUEST),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1162,6 +1508,10 @@ class SatoriNostr:
             await self._handle_channel_open_event(event)
         elif kind == KIND_CHANNEL_SETTLED:
             await self._handle_settlement_event(event)
+        elif kind == KIND_PREDICTION:
+            await self._handle_prediction_event(event)
+        elif kind == KIND_ACCESS_REQUEST:
+            await self._handle_access_request_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1172,6 +1522,10 @@ class SatoriNostr:
         try:
             sender_pubkey = event.author()
             content = event.content()
+
+            # Empty content = heartbeat published for freshness checks only
+            if not content:
+                return
 
             # Try plaintext first (free broadcast), fall back to decryption (paid)
             try:
@@ -1230,6 +1584,25 @@ class SatoriNostr:
         except Exception as e:
             print(f"Error handling payment event: {e}")
 
+    async def _handle_prediction_event(self, event: Event) -> None:
+        """Handle an incoming prediction submission (kind 34608, host side).
+
+        Only the host can decrypt — others silently discard.
+        """
+        try:
+            sender_pubkey = event.author()
+            from .encryption import decrypt_json, EncryptionError as _EncErr
+            prediction_json = decrypt_json(
+                event.content(), sender_pubkey, self._keys)
+            prediction = PredictionSubmission.from_json(prediction_json)
+            inbound = InboundPrediction(
+                prediction=prediction,
+                event_id=event.id().to_hex(),
+            )
+            await self._prediction_queue.put(inbound)
+        except Exception:
+            pass  # not the intended recipient — silently discard
+
     async def _handle_subscription_event(self, event: Event) -> None:
         """Handle a subscription announcement event (kind 34602)."""
         try:
@@ -1274,6 +1647,12 @@ class SatoriNostr:
         the sender can use them as a fallback reset if KIND_CHANNEL_SETTLED
         was not received. All other commitments are filtered to those addressed
         to this client (receiver_pubkey matches our pubkey).
+        was not received. All other commitments are queued unconditionally —
+        the consumer (_channelProcessCommitment in start.py) filters them by
+        looking up the channel row by p2sh_address, which inherently proves
+        ownership. The library cannot filter here because the commitment
+        payload's receiver_pubkey is an EVR wallet pubkey (33 bytes) and
+        cannot be compared to self.pubkey() which is a Nostr pubkey (32 bytes).
         """
         try:
             content = event.content()
@@ -1340,3 +1719,22 @@ class SatoriNostr:
             await self._settlement_queue.put(inbound)
         except Exception as e:
             print(f"Error handling settlement event: {e}")
+
+    async def _handle_access_request_event(self, event: Event) -> None:
+        """Handle an incoming access request (kind 34609, producer side).
+
+        Only the producer can decrypt — others silently discard.
+        """
+        try:
+            sender_pubkey = event.author()
+            from .encryption import decrypt_json
+            request_json = decrypt_json(
+                event.content(), sender_pubkey, self._keys)
+            access_request = AccessRequest.from_json(request_json)
+            inbound = InboundAccessRequest(
+                access_request=access_request,
+                event_id=event.id().to_hex(),
+            )
+            await self._access_request_queue.put(inbound)
+        except Exception:
+            pass  # not the intended recipient — silently discard

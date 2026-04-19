@@ -25,6 +25,7 @@ class DatastreamMetadata:
     created_at: int          # Unix timestamp when stream was first created
     cadence_seconds: int | None  # Expected seconds between observations (None = irregular)
     tags: list[str]          # Searchable tags (e.g., ["bitcoin", "price", "usd"])
+    approval_required: bool = False  # If True, subscribers must request and receive approval before receiving data
     metadata: dict[str, Any] | None = None  # Optional: source info, lineage, wallet pubkey, etc.
 
     def to_dict(self) -> dict[str, Any]:
@@ -229,6 +230,7 @@ class ChannelCommitment:
     remainder_sats: int         # Change back to the channel (for the next round)
     fee: int                    # Transaction fee in sats
     timestamp: int              # Unix timestamp when published
+    stream_name: str = ''       # Which stream this payment is for
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -369,6 +371,140 @@ class InboundChannelSettlement:
     raw_event: dict[str, Any] | None = None
 
 
+@dataclass
+class CompetitionAnnouncement:
+    """Public announcement of a prediction competition hosted on a data stream.
+
+    Published as kind 34607 event (parameterized replaceable,
+    d=stream_name:stream_provider_pubkey:host_pubkey).
+
+    Re-publishing replaces the previous announcement. Setting active=False
+    (or publishing empty content) closes the competition.
+
+    pay_per_obs_sats is the total the host promises to pay per observation,
+    distributed across predictors however the host chooses. paid_predictors
+    and competing_predictors are intent metadata — social signals, not
+    enforced constraints.
+    """
+    stream_name: str
+    stream_provider_pubkey: str
+    host_pubkey: str
+    pay_per_obs_sats: int
+    paid_predictors: int
+    competing_predictors: int
+    scoring_metric: str
+    horizon: int
+    active: bool
+    timestamp: int
+    scoring_params: dict[str, Any] | None = None
+
+    def __post_init__(self):
+        if self.scoring_params is None:
+            self.scoring_params = {}
+
+    def d_tag(self) -> str:
+        return f'{self.stream_name}:{self.stream_provider_pubkey}:{self.host_pubkey}'
+
+    def close(self) -> 'CompetitionAnnouncement':
+        import dataclasses
+        return dataclasses.replace(
+            self, active=False, timestamp=self.timestamp + 1)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'CompetitionAnnouncement':
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'CompetitionAnnouncement':
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class PredictionSubmission:
+    """A prediction sent from a predictor to a competition host.
+
+    Sent as kind 34608 encrypted DM (NIP-04) directly to the host.
+    Not broadcast publicly — only the host can read it.
+
+    The stream is uniquely identified by (stream_name, stream_provider_pubkey).
+    seq_num identifies which upcoming observation this predicts.
+    """
+    stream_name: str
+    stream_provider_pubkey: str
+    predictor_pubkey: str
+    predictor_wallet_pubkey: str
+    seq_num: int
+    predicted_value: float
+    timestamp: int
+
+    def stream_key(self) -> str:
+        return f'{self.stream_name}:{self.stream_provider_pubkey}'
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'PredictionSubmission':
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'PredictionSubmission':
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundPrediction:
+    """A received prediction submission after parsing."""
+    prediction: PredictionSubmission
+    event_id: str
+    raw_event: dict[str, Any] | None = None
+
+
+@dataclass
+class AccessRequest:
+    """A request from a subscriber to access an approval-gated stream.
+
+    Sent as kind 34609 encrypted DM (NIP-04) directly to the producer.
+    Not broadcast publicly — only the producer can read it.
+    """
+    stream_name: str
+    requester_pubkey: str        # Subscriber requesting access (hex)
+    producer_pubkey: str         # Stream producer (hex)
+    message: str = ''            # Optional message from requester
+    timestamp: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'AccessRequest':
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'AccessRequest':
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class InboundAccessRequest:
+    """A received access request after decryption."""
+    access_request: AccessRequest
+    event_id: str
+    raw_event: dict[str, Any] | None = None
+
+
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
@@ -377,6 +513,9 @@ KIND_PAYMENT = 34603                # Payment notification (parameterized replac
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
+KIND_COMPETITION_ANNOUNCE = 34607   # Competition announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
+KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
+KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams)
 
 
 # Standard cadence values (in seconds)

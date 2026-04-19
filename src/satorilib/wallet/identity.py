@@ -584,7 +584,11 @@ class Identity(IdentityBase):
 
     @property
     def publicKeyBytes(self) -> bytes:
-        return bytes.fromhex(self.publicKey or '')
+        if self.publicKey:
+            return bytes.fromhex(self.publicKey)
+        if self._privateKeyObj:
+            return self._privateKeyObj.pub
+        return b''
 
     @property
     def isEncrypted(self) -> bool:

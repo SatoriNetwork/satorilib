@@ -182,7 +182,7 @@ class Wallet(WalletBase):
         self.banner = None
         self.currency: Balance = Balance.empty('EVR')
         self.balance: Balance = Balance.empty('SATORI')
-        self.divisibility = 0
+        self.divisibility = 8
         self.transactionHistory: list[dict] = []
         # TransactionStruct(*v)... {txid: (raw, vinVoutsTxs)}
         self._transactions: dict[str, tuple[dict, list[dict]]] = {}
@@ -565,7 +565,7 @@ class Wallet(WalletBase):
             logging.debug('unable to get balances', e)
 
     def getStats(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         self.stats = self.electrumx.api.getStats()
         self.divisibility = Wallet.openSafely(self.stats, 'divisions', 8)
@@ -573,13 +573,13 @@ class Wallet(WalletBase):
         self.banner = self.electrumx.api.getBanner()
 
     def getTransactionHistory(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         self.transactionHistory = self.electrumx.api.getTransactionHistory(
             scripthash=self.scripthash)
 
     def getBalances(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         self.balances = self.electrumx.api.getBalances(scripthash=self.scripthash)
         self.currency = Balance.fromBalances('EVR', self.balances or {})
@@ -588,7 +588,7 @@ class Wallet(WalletBase):
             self.balanceUpdatedCallback(kind='wallet', evr=self.currency, satori=self.balance)
 
     def getReadyToSend(self, balance: bool = False, save: bool = True):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         try:
             self.maybeConnect()
@@ -621,7 +621,7 @@ class Wallet(WalletBase):
         NOTE: This will NOT work for P2SH addresses where the redeem script
         must be fetched from the chain. Use getReadyToSend for P2SH wallets.
         '''
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         try:
             self.maybeConnect()
@@ -662,7 +662,7 @@ class Wallet(WalletBase):
                 uc['scriptPubKey'] = scriptPubKeyHex
 
     def getUnspents(self):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         #import traceback
         #traceback.print_stack()
@@ -722,7 +722,7 @@ class Wallet(WalletBase):
             if callable(then):
                 then()
 
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return False
         if threaded:
             self.getUnspentTransactionsThread = threading.Thread(
@@ -737,7 +737,7 @@ class Wallet(WalletBase):
     ### Functions ##############################################################
 
     def appendTransaction(self, txid):
-        if not self.electrumx.connected():
+        if not self.electrumx.ensureConnected():
             return
         #self.electrumx.ensureConnected()
         if txid not in self._transactions.keys():
@@ -976,7 +976,7 @@ class Wallet(WalletBase):
         feeOverride: Optional[int] = None,
     ) -> tuple[list, int]:
         unspentCurrency = [
-            x for x in self.unspentCurrency if x.get('value') > 0]
+            x for x in (self.unspentCurrency or []) if x.get('value') > 0]
         unspentCurrency = sorted(unspentCurrency, key=lambda x: x['value'])
         haveCurrency = sum([x.get('value') for x in unspentCurrency])
         if (haveCurrency < sats + (feeOverride or self.reserve)):
@@ -1036,7 +1036,7 @@ class Wallet(WalletBase):
         sats: int,
         randomly: bool = False
     ) -> tuple[list, int]:
-        unspentSatori = [x for x in self.unspentAssets if x.get(
+        unspentSatori = [x for x in (self.unspentAssets or []) if x.get(
             'name', x.get('asset')) == 'SATORI' and x.get('value') > 0]
         unspentSatori = sorted(unspentSatori, key=lambda x: x['value'])
         haveSatori = sum([x.get('value') for x in unspentSatori])
@@ -1141,7 +1141,19 @@ class Wallet(WalletBase):
         ''' serialize '''
 
     def broadcast(self, txHex: str) -> str:
-        return self.electrumx.api.broadcast(txHex)
+        """Broadcast a signed tx. Raises TransactionFailure if the node rejects
+        it (ElectrumX returns a {'code', 'message'} error dict). Returns the
+        plain txid string on success.
+        """
+        result = self.electrumx.api.broadcast(txHex)
+        if isinstance(result, dict) and result.get('code') is not None:
+            raise TransactionFailure(
+                f'broadcast rejected: {result.get("message", result)}')
+        if isinstance(result, (list, tuple)):
+            result = result[0] if result else ''
+        if result is None:
+            raise TransactionFailure('broadcast returned no result')
+        return str(result)
 
     ### Transactions ###########################################################
 

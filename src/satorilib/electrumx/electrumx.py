@@ -94,7 +94,6 @@ class Electrumx(ElectrumxConnection):
     #})
 
     electrumxServers: list[str] = [
-        '167.71.11.203:50002',
         'evrx-1.satoriog.com:50002',
         'electrum1-mainnet.evrmorecoin.org:50002',
         'electrum2-mainnet.evrmorecoin.org:50002',
@@ -102,7 +101,6 @@ class Electrumx(ElectrumxConnection):
 
     # subscriptions work better without ssl for some reason
     electrumxServersWithoutSSL: list[str] = [
-        '167.71.11.203:50001',
         'evrx-1.satoriog.com:50001',
         'electrum1-mainnet.evrmorecoin.org:50001',
         'electrum2-mainnet.evrmorecoin.org:50001',
