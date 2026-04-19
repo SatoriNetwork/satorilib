@@ -556,9 +556,9 @@ class SatoriNostr:
                 # Paid: subscriber has paid for this seq_num
                 paid = (sub_state.last_paid_seq is not None
                         and sub_state.last_paid_seq >= seq_num)
-                # Free sample: new subscriber who hasn't received anything yet
-                free = (sub_state.last_paid_seq is None
-                        and stream_metadata.free_sample)
+                # New subscriber who hasn't received anything yet — send
+                # one free observation to bootstrap the payment cycle.
+                free = sub_state.last_paid_seq is None
 
                 if paid or free:
                     try:

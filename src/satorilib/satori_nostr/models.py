@@ -26,7 +26,6 @@ class DatastreamMetadata:
     cadence_seconds: int | None  # Expected seconds between observations (None = irregular)
     tags: list[str]          # Searchable tags (e.g., ["bitcoin", "price", "usd"])
     approval_required: bool = False  # If True, subscribers must request and receive approval before receiving data
-    free_sample: bool = True  # If True, new subscribers get one free observation before needing to pay
     metadata: dict[str, Any] | None = None  # Optional: source info, lineage, wallet pubkey, etc.
 
     def to_dict(self) -> dict[str, Any]:
