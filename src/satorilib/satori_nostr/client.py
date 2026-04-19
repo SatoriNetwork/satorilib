@@ -533,7 +533,25 @@ class SatoriNostr:
             event_ids.append(output.id.to_hex())
             self._stats["observations_sent"] += 1
         else:
-            # Paid stream: encrypt and send per subscriber
+            # Paid stream: publish a public heartbeat so freshness checks
+            # (which query by d-tag) work even when there are no subscribers.
+            heartbeat_tags = [
+                Tag.parse(["d", stream_name]),
+                Tag.parse(["stream", stream_name]),
+                Tag.parse(["seq", str(seq_num)]),
+                Tag.parse(["satori", "observation"]),
+            ]
+            heartbeat_builder = EventBuilder(
+                Kind(KIND_DATASTREAM_DATA),
+                "",
+            ).tags(heartbeat_tags)
+            try:
+                output = await self._client.send_event_builder(heartbeat_builder)
+                event_ids.append(output.id.to_hex())
+            except Exception as e:
+                print(f"Error publishing heartbeat for {stream_name}: {e}")
+
+            # Encrypt and send per subscriber
             for sub_pubkey, sub_state in stream_subscribers.items():
                 if sub_state.last_paid_seq is not None and sub_state.last_paid_seq >= seq_num:
                     try:
@@ -717,6 +735,9 @@ class SatoriNostr:
         try:
             sender_pubkey = event.author()
             content = event.content()
+            # Empty content = heartbeat; no observation data to parse
+            if not content:
+                return None
             try:
                 observation = DatastreamObservation.from_json(content)
             except Exception:
@@ -1488,6 +1509,10 @@ class SatoriNostr:
         try:
             sender_pubkey = event.author()
             content = event.content()
+
+            # Empty content = heartbeat published for freshness checks only
+            if not content:
+                return
 
             # Try plaintext first (free broadcast), fall back to decryption (paid)
             try:
