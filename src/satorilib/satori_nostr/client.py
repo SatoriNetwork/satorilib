@@ -533,63 +533,51 @@ class SatoriNostr:
             event_ids.append(output.id.to_hex())
             self._stats["observations_sent"] += 1
         else:
-            # Paid stream: publish a public heartbeat so freshness checks
-            # (which query by d-tag) work even when there are no subscribers.
-            heartbeat_tags = [
-                Tag.parse(["d", stream_name]),
-                Tag.parse(["stream", stream_name]),
-                Tag.parse(["seq", str(seq_num)]),
-                Tag.parse(["satori", "observation"]),
-            ]
-            heartbeat_builder = EventBuilder(
-                Kind(KIND_DATASTREAM_DATA),
-                "",
-            ).tags(heartbeat_tags)
-            try:
-                output = await self._client.send_event_builder(heartbeat_builder)
-                event_ids.append(output.id.to_hex())
-            except Exception as e:
-                print(f"Error publishing heartbeat for {stream_name}: {e}")
+            # Paid stream: send one event per eligible subscriber with only the
+            # value encrypted in content. All other metadata (seq, timestamp,
+            # stream_name) goes in plaintext tags. This eliminates the need for
+            # a separate heartbeat event — the tags alone carry enough info for
+            # marketplace freshness checks — and removes the d-tag collision
+            # where heartbeat and encrypted obs shared the same replaceable
+            # d-tag, causing the relay to suppress the encrypted delivery.
+            value_str = str(observation.value)
 
-            # Encrypt and send per subscriber
             for sub_pubkey, sub_state in stream_subscribers.items():
-                # Paid: subscriber has paid for this seq_num
                 paid = (sub_state.last_paid_seq is not None
                         and sub_state.last_paid_seq >= seq_num)
-                # New subscriber who hasn't received anything yet — send
-                # one free observation to bootstrap the payment cycle.
                 free = sub_state.last_paid_seq is None
 
-                if paid or free:
-                    try:
-                        recipient_pubkey = PublicKey.parse(sub_pubkey)
-                        encrypted = encrypt_observation(
-                            obs_json, recipient_pubkey, self._keys)
+                if not (paid or free):
+                    continue
 
-                        tags = [
-                            Tag.parse(["d", stream_name]),  # Replaceable: latest obs per stream
-                            Tag.parse(["p", sub_pubkey]),
-                            Tag.parse(["stream", stream_name]),
-                            Tag.parse(["seq", str(seq_num)]),
-                        ]
+                try:
+                    recipient_pubkey = PublicKey.parse(sub_pubkey)
+                    encrypted_value = encrypt_observation(
+                        value_str, recipient_pubkey, self._keys)
 
-                        builder = EventBuilder(
-                            Kind(KIND_DATASTREAM_DATA),
-                            encrypted,
-                        ).tags(tags)
+                    tags = [
+                        Tag.parse(["d", stream_name]),
+                        Tag.parse(["p", sub_pubkey]),
+                        Tag.parse(["stream", stream_name]),
+                        Tag.parse(["seq", str(seq_num)]),
+                        Tag.parse(["timestamp", str(observation.timestamp)]),
+                        Tag.parse(["satori", "observation"]),
+                    ]
 
-                        output = await self._client.send_event_builder(builder)
-                        event_ids.append(output.id.to_hex())
-                        self._stats["observations_sent"] += 1
+                    builder = EventBuilder(
+                        Kind(KIND_DATASTREAM_DATA),
+                        encrypted_value,
+                    ).tags(tags)
 
-                        # After sending the free sample, mark this seq as
-                        # granted so they don't get a second free one.
-                        # They must pay for seq_num+1 onwards.
-                        if free:
-                            sub_state.last_paid_seq = seq_num
+                    output = await self._client.send_event_builder(builder)
+                    event_ids.append(output.id.to_hex())
+                    self._stats["observations_sent"] += 1
 
-                    except Exception as e:
-                        print(f"Error sending to {sub_pubkey}: {e}")
+                    if free:
+                        sub_state.last_paid_seq = seq_num
+
+                except Exception as e:
+                    print(f"Error sending to {sub_pubkey}: {e}")
 
         return event_ids
 
@@ -1516,24 +1504,40 @@ class SatoriNostr:
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
 
-        Free streams broadcast plaintext content.
-        Paid streams encrypt per-subscriber via NIP-04.
+        Free streams: content is plaintext JSON (full DatastreamObservation).
+        Paid streams: metadata in plaintext tags, only value encrypted in content.
         """
         try:
             sender_pubkey = event.author()
             content = event.content()
 
-            # Empty content = heartbeat published for freshness checks only
+            # Empty content = legacy heartbeat, skip
             if not content:
                 return
 
-            # Try plaintext first (free broadcast), fall back to decryption (paid)
+            tag_map = {}
+            for tag in event.tags().to_vec():
+                vec = tag.as_vec()
+                if len(vec) >= 2:
+                    tag_map[vec[0]] = vec[1]
+
+            # Try plaintext JSON first (free stream)
             try:
                 observation = DatastreamObservation.from_json(content)
             except Exception:
-                # Not valid JSON / not plaintext - try decrypting
-                obs_json = decrypt_observation(content, sender_pubkey, self._keys)
-                observation = DatastreamObservation.from_json(obs_json)
+                # Paid stream: decrypt value, reconstruct from tags
+                stream_name = tag_map.get("stream") or tag_map.get("d", "")
+                seq_num = int(tag_map.get("seq", 0))
+                timestamp = int(tag_map.get("timestamp", 0))
+                if not stream_name:
+                    return
+                value_str = decrypt_observation(content, sender_pubkey, self._keys)
+                observation = DatastreamObservation(
+                    stream_name=stream_name,
+                    timestamp=timestamp,
+                    value=value_str,
+                    seq_num=seq_num,
+                )
 
             inbound = InboundObservation(
                 stream_name=observation.stream_name,
