@@ -1658,9 +1658,14 @@ class SatoriNostr:
         was not received. All other commitments are queued unconditionally —
         the consumer (_channelProcessCommitment in start.py) filters them by
         looking up the channel row by p2sh_address, which inherently proves
-        ownership. The library cannot filter here because the commitment
-        payload's receiver_pubkey is an EVR wallet pubkey (33 bytes) and
-        cannot be compared to self.pubkey() which is a Nostr pubkey (32 bytes).
+        ownership.
+
+        The payload's `receiver_pubkey` is a 33-byte EVR wallet pubkey and
+        cannot be compared to `self.pubkey()` (a 32-byte Nostr pubkey), so the
+        payload itself cannot be used to filter at this layer. The event *tag*
+        `p`, however, is set by publish_commitment() to the receiver's Nostr
+        pubkey and could be used for a library-side filter — see the
+        `commitment p-tag filter` item in tasks/paid-stream-fixes.md.
         """
         try:
             content = event.content()
