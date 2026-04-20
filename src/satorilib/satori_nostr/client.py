@@ -1525,7 +1525,13 @@ class SatoriNostr:
             try:
                 observation = DatastreamObservation.from_json(content)
             except Exception:
-                # Paid stream: decrypt value, reconstruct from tags
+                # Paid stream: encrypted for a specific recipient — skip if
+                # the p tag doesn't match our own pubkey (e.g. we're the
+                # publisher seeing our own event re-delivered by the relay)
+                p_tag = tag_map.get("p", "")
+                if p_tag and p_tag != self._keys.public_key().to_hex():
+                    return
+                # Decrypt value, reconstruct from tags
                 stream_name = tag_map.get("stream") or tag_map.get("d", "")
                 seq_num = int(tag_map.get("seq", 0))
                 timestamp = int(tag_map.get("timestamp", 0))
