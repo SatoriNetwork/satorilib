@@ -231,6 +231,7 @@ class ChannelCommitment:
     fee: int                    # Transaction fee in sats
     timestamp: int              # Unix timestamp when published
     stream_name: str = ''       # Which stream this payment is for
+    price_per_obs: int = 0      # Agreed price at time of commitment (Fix B)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
