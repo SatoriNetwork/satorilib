@@ -1701,6 +1701,19 @@ class SatoriNostr:
                     pass
                 return
 
+            # Fix O: drop commitments not addressed to us. The `p` tag is
+            # set by publish_commitment() to the receiver's Nostr pubkey.
+            # Without this filter, stale third-party commitments on the relay
+            # trigger unnecessary DB lookups and 3-second retries on reconnect.
+            p_tag = None
+            for tag in event.tags().to_vec():
+                tag_vec = tag.as_vec()
+                if len(tag_vec) >= 2 and tag_vec[0] == 'p':
+                    p_tag = tag_vec[1]
+                    break
+            if p_tag and p_tag != self.pubkey():
+                return
+
             commitment = ChannelCommitment.from_json(content)
 
             inbound = InboundCommitment(
