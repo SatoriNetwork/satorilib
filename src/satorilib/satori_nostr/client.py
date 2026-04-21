@@ -1614,18 +1614,37 @@ class SatoriNostr:
             pass  # not the intended recipient — silently discard
 
     async def _handle_subscription_event(self, event: Event) -> None:
-        """Handle a subscription announcement event (kind 34602)."""
+        """Handle a subscription announcement event (kind 34602).
+
+        Subscription events with an action=unsubscribe tag remove the
+        subscriber from the in-memory _subscribers dict (Fix G).
+        """
         try:
+            # Check for unsubscribe action tag
+            action = None
+            for tag in event.tags().to_vec():
+                vec = tag.as_vec()
+                if len(vec) >= 2 and vec[0] == 'action':
+                    action = vec[1]
+                    break
+
             # Parse subscription (public content)
             sub = SubscriptionAnnouncement.from_json(event.content())
 
-            # If I'm the provider, record this subscription
+            # If I'm the provider, handle subscribe or unsubscribe
             if sub.nostr_pubkey == self.pubkey():
-                self.record_subscription(
-                    sub.stream_name,
-                    sub.subscriber_pubkey,
-                    sub.payment_channel
-                )
+                if action == 'unsubscribe':
+                    if (sub.stream_name in self._subscribers
+                            and sub.subscriber_pubkey
+                            in self._subscribers[sub.stream_name]):
+                        del self._subscribers[sub.stream_name][
+                            sub.subscriber_pubkey]
+                else:
+                    self.record_subscription(
+                        sub.stream_name,
+                        sub.subscriber_pubkey,
+                        sub.payment_channel
+                    )
 
         except Exception as e:
             print(f"Error handling subscription event: {e}")
