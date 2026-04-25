@@ -457,6 +457,30 @@ class SatoriServerClient(object):
             endpoint='/api/v1/peer/relays')
         return r.json()
 
+    def getRelayConfig(self) -> dict:
+        """Get server-driven relay/neuron configuration (e.g. max_streams).
+
+        Returns an empty dict if the endpoint is unavailable so callers
+        can fall back to local defaults. Does not log the response body
+        (the values it returns are caps the server controls, not data
+        the user should see surfaced and tempted to override locally).
+        """
+        try:
+            r = requests.get(self.url + '/api/v1/peer/relay-config', timeout=15)
+            if not r.ok:
+                logging.warning(
+                    f'relay config fetch failed: status {r.status_code}')
+                return {}
+            data = r.json()
+            if not isinstance(data, dict):
+                logging.warning('relay config fetch failed: bad payload')
+                return {}
+            logging.info('relay config fetch ok', print=True)
+            return data
+        except Exception as e:
+            logging.warning(f'relay config fetch failed: {e}')
+            return {}
+
     def registerRelay(self, relayUrl: str) -> dict:
         """Register a relay URL with central server for NIP-11 verification."""
         return self._makeAuthenticatedCall(
