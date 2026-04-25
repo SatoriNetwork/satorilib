@@ -579,6 +579,30 @@ class SatoriNostr:
                 except Exception as e:
                     print(f"Error sending to {sub_pubkey}: {e}")
 
+            # Zero-subscriber freshness fallback. When a paid stream has no
+            # eligible recipients (all lapsed, none funded yet) the per-sub
+            # loop emits nothing and the relay's last event ages out — the
+            # marketplace then shows the stream as stale and no new
+            # subscriber discovers it. Send one tags-only event so the relay
+            # has a fresh created_at for freshness checks. No `p` tag, empty
+            # body — leaks no value to non-paying subs.
+            if not event_ids and stream_metadata.price_per_obs > 0:
+                try:
+                    tags = [
+                        Tag.parse(["d", stream_name]),
+                        Tag.parse(["stream", stream_name]),
+                        Tag.parse(["seq", str(seq_num)]),
+                        Tag.parse(["timestamp", str(observation.timestamp)]),
+                        Tag.parse(["satori", "heartbeat"]),
+                    ]
+                    builder = EventBuilder(
+                        Kind(KIND_DATASTREAM_DATA), ""
+                    ).tags(tags)
+                    output = await self._client.send_event_builder(builder)
+                    event_ids.append(output.id.to_hex())
+                except Exception as e:
+                    print(f"Error sending heartbeat for {stream_name}: {e}")
+
         return event_ids
 
     def get_subscribers(self, stream_name: str) -> list[str]:
