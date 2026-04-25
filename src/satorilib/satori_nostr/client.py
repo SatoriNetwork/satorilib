@@ -605,6 +605,80 @@ class SatoriNostr:
 
         return event_ids
 
+    async def publish_historic_observation(
+        self,
+        observation: DatastreamObservation,
+        stream_metadata: DatastreamMetadata,
+        recipient_pubkey: str,
+    ) -> str | None:
+        """Send a single historical observation to one specific subscriber.
+
+        Used to fulfill an explicit historic-fetch request that the subscriber
+        already paid for via a ChannelCommitment with `fetch_kind="historic"`.
+        Bypasses the live `last_paid_seq >= seq_num` gate — the publisher
+        already validated the historic payment before invoking this — and tags
+        the event `historic=1` so the subscriber's pipeline skips the normal
+        live-payment trigger on receive.
+
+        Returns the published event id, or None on failure.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        stream_name = observation.stream_name
+        seq_num = observation.seq_num
+
+        # Free streams: there's nothing to charge for, but historic delivery
+        # still makes sense — fall through to the unencrypted broadcast path.
+        if stream_metadata.price_per_obs == 0:
+            tags = [
+                Tag.parse(["d", f"{stream_name}:historic:{seq_num}"]),
+                Tag.parse(["stream", stream_name]),
+                Tag.parse(["seq", str(seq_num)]),
+                Tag.parse(["timestamp", str(observation.timestamp)]),
+                Tag.parse(["satori", "observation"]),
+                Tag.parse(["historic", "1"]),
+            ]
+            builder = EventBuilder(
+                Kind(KIND_DATASTREAM_DATA),
+                observation.to_json(),
+            ).tags(tags)
+            try:
+                output = await self._client.send_event_builder(builder)
+                self._stats["observations_sent"] += 1
+                return output.id.to_hex()
+            except Exception as e:
+                print(f"Error sending historic free obs: {e}")
+                return None
+
+        try:
+            recipient = PublicKey.parse(recipient_pubkey)
+            encrypted_value = encrypt_observation(
+                str(observation.value), recipient, self._keys)
+            # The d-tag must be unique per historic event so the relay's
+            # parameterized-replaceable behavior doesn't drop earlier ones in
+            # the same range. Composing it with seq_num keeps each historic
+            # event distinct from the live d=stream_name slot.
+            tags = [
+                Tag.parse(["d", f"{stream_name}:historic:{seq_num}"]),
+                Tag.parse(["p", recipient_pubkey]),
+                Tag.parse(["stream", stream_name]),
+                Tag.parse(["seq", str(seq_num)]),
+                Tag.parse(["timestamp", str(observation.timestamp)]),
+                Tag.parse(["satori", "observation"]),
+                Tag.parse(["historic", "1"]),
+            ]
+            builder = EventBuilder(
+                Kind(KIND_DATASTREAM_DATA),
+                encrypted_value,
+            ).tags(tags)
+            output = await self._client.send_event_builder(builder)
+            self._stats["observations_sent"] += 1
+            return output.id.to_hex()
+        except Exception as e:
+            print(f"Error sending historic obs to {recipient_pubkey}: {e}")
+            return None
+
     def get_subscribers(self, stream_name: str) -> list[str]:
         """Get list of subscriber pubkeys for a stream (provider).
 
@@ -1574,6 +1648,7 @@ class SatoriNostr:
                 nostr_pubkey=sender_pubkey.to_hex(),
                 observation=observation,
                 event_id=event.id().to_hex(),
+                historic=tag_map.get("historic") == "1",
             )
 
             await self._observation_queue.put(inbound)

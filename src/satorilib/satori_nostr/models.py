@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from typing import Any
 
 
@@ -231,6 +231,14 @@ class ChannelCommitment:
     fee: int                    # Transaction fee in sats
     timestamp: int              # Unix timestamp when published
     stream_name: str = ''       # Which stream this payment is for
+    # Distinguishes a normal prepay-for-future payment ("prepay") from an
+    # explicit request for a specific historical observed_at range
+    # ("historic"). Historic payments must NOT advance last_paid_seq /
+    # subscriber_access — instead they entitle the sender to receive the
+    # observations whose observed_at falls inside [fetch_t1, fetch_t2].
+    fetch_kind: str = 'prepay'
+    fetch_t1: int | None = None  # inclusive observed_at lower bound (historic)
+    fetch_t2: int | None = None  # inclusive observed_at upper bound (historic)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -238,8 +246,13 @@ class ChannelCommitment:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChannelCommitment":
-        """Deserialize from dictionary."""
-        return cls(**data)
+        """Deserialize from dictionary.
+
+        Tolerant to unknown keys so a future producer adding fields doesn't
+        break older consumers that haven't been upgraded yet.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
@@ -267,6 +280,10 @@ class InboundObservation:
     observation: DatastreamObservation  # The actual observation data
     event_id: str                       # Nostr event ID
     raw_event: dict[str, Any] | None = None  # Optional raw Nostr event
+    # True iff the publisher tagged this event ["historic", "1"] — i.e. it was
+    # delivered in response to an explicit historic-fetch payment, not the live
+    # micropayment flow. Subscribers must not fire a live payment for these.
+    historic: bool = False
 
 
 @dataclass
