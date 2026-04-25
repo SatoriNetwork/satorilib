@@ -605,6 +605,64 @@ class SatoriNostr:
 
         return event_ids
 
+    async def send_observation_to_subscriber(
+        self,
+        observation: DatastreamObservation,
+        stream_metadata: DatastreamMetadata,
+        subscriber_pubkey: str,
+    ) -> str | None:
+        """Send a specific observation to a single subscriber (provider).
+
+        Used for gap recovery: re-sends a previously published observation
+        to a subscriber who missed it, without incrementing any sequence
+        counters.  Only sends if the subscriber's last_paid_seq covers the
+        observation's seq_num.
+
+        Returns the Nostr event ID on success, or None if not sent.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+
+        stream_name = observation.stream_name
+        seq_num = observation.seq_num
+
+        sub_state = self._subscribers.get(stream_name, {}).get(subscriber_pubkey)
+        if sub_state is None:
+            return None
+
+        paid = (sub_state.last_paid_seq is not None
+                and sub_state.last_paid_seq >= seq_num)
+        free = sub_state.last_paid_seq is None
+        if not (paid or free):
+            return None
+
+        try:
+            recipient_pubkey = PublicKey.parse(subscriber_pubkey)
+            value_str = str(observation.value)
+            encrypted_value = encrypt_observation(
+                value_str, recipient_pubkey, self._keys)
+
+            tags = [
+                Tag.parse(["d", stream_name]),
+                Tag.parse(["p", subscriber_pubkey]),
+                Tag.parse(["stream", stream_name]),
+                Tag.parse(["seq", str(seq_num)]),
+                Tag.parse(["timestamp", str(observation.timestamp)]),
+                Tag.parse(["satori", "observation"]),
+            ]
+
+            builder = EventBuilder(
+                Kind(KIND_DATASTREAM_DATA),
+                encrypted_value,
+            ).tags(tags)
+
+            output = await self._client.send_event_builder(builder)
+            self._stats["observations_sent"] += 1
+            return output.id.to_hex()
+        except Exception as e:
+            print(f"Error resending to {subscriber_pubkey}: {e}")
+            return None
+
     def get_subscribers(self, stream_name: str) -> list[str]:
         """Get list of subscriber pubkeys for a stream (provider).
 
