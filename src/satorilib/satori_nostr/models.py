@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from typing import Any
 
 
@@ -238,8 +238,11 @@ class ChannelCommitment:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChannelCommitment":
-        """Deserialize from dictionary."""
-        return cls(**data)
+        # Tolerant to unknown keys so a producer adding fields (e.g. an
+        # unmerged fetch_kind/fetch_t1/fetch_t2 experiment) doesn't break
+        # consumers that haven't been upgraded yet.
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
