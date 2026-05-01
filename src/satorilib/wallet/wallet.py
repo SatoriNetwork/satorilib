@@ -2953,7 +2953,8 @@ class Wallet(WalletBase):
 
         ready, partialReady, msg = self.validateForTypicalNeuronTransaction(
             amount=amount,
-            address=address)
+            address=address,
+            sweep=sweep)
         if ready:
             return sendDirect()
         elif partialReady:
@@ -3069,17 +3070,19 @@ class Wallet(WalletBase):
         self,
         amount: float,
         address: str,
+        sweep: bool = False,
     ) -> TransactionResult:
-        if isinstance(amount, Decimal):
-            amount = float(amount)
-        if amount <= 0:
-            return False, False, f'Satori Transaction bad params: unable to send amount: {amount}'
-        if amount > self.balance.amount:
-            return False, False, f'Satori Transaction bad params: {amount} > {self.balance.amount} '
+        if not sweep:
+            if isinstance(amount, Decimal):
+                amount = float(amount)
+            if amount <= 0:
+                return False, False, f'Satori Transaction bad params: unable to send amount: {amount}'
+            if amount > self.balance.amount:
+                return False, False, f'Satori Transaction bad params: {amount} > {self.balance.amount} '
         if not Validate.address(address, self.symbol):
             return False, False, f'Satori Transaction bad params: address: {address}'
         if self.currency < self.reserve:
-            if amount > self.balance.amount + self.mundoFee:
+            if not sweep and amount > self.balance.amount + self.mundoFee:
                 return False, False, f'Satori Transaction bad params: not enough for transaction fees: {amount} > {self.balance.amount} + {self.mundoFee}'
             return False, True, 'currency < reserve'
         return True, False, ''
