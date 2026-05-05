@@ -38,7 +38,7 @@ from .models import (
     ChannelCommitment,
     ChannelOpen,
     ChannelSettlement,
-    CompetitionAnnouncement,
+    BountyAnnouncement,
     PredictionSubmission,
     InboundPrediction,
     InboundObservation,
@@ -55,7 +55,7 @@ from .models import (
     KIND_CHANNEL_COMMITMENT,
     KIND_CHANNEL_OPEN,
     KIND_CHANNEL_SETTLED,
-    KIND_COMPETITION_ANNOUNCE,
+    KIND_BOUNTY_ANNOUNCE,
     KIND_PREDICTION,
     KIND_ACCESS_REQUEST,
     compute_stream_topic_tag,
@@ -308,14 +308,14 @@ class SatoriNostr:
 
         return output.id.to_hex()
 
-    async def announce_competition(self, competition: CompetitionAnnouncement) -> str:
-        """Announce a prediction competition (host).
+    async def announce_bounty(self, bounty: BountyAnnouncement) -> str:
+        """Announce a prediction bounty (host).
 
-        Publishes competition metadata as a kind 34607 parameterized replaceable
+        Publishes bounty metadata as a kind 34607 parameterized replaceable
         event. Re-publishing with the same d-tag replaces the previous announcement.
 
         Args:
-            competition: Competition announcement to publish
+            bounty: Bounty announcement to publish
 
         Returns:
             Event ID of the announcement
@@ -327,25 +327,25 @@ class SatoriNostr:
             raise RuntimeError("Client not running")
 
         tags = [
-            Tag.parse(["d", competition.d_tag()]),
-            Tag.parse(["satori", "competition"]),
-            Tag.parse(["s", competition.stream_name]),
-            Tag.parse(["p", competition.stream_provider_pubkey]),
+            Tag.parse(["d", bounty.d_tag()]),
+            Tag.parse(["satori", "bounty"]),
+            Tag.parse(["s", bounty.stream_name]),
+            Tag.parse(["p", bounty.stream_provider_pubkey]),
         ]
 
         builder = EventBuilder(
-            Kind(KIND_COMPETITION_ANNOUNCE),
-            competition.to_json(),
+            Kind(KIND_BOUNTY_ANNOUNCE),
+            bounty.to_json(),
         ).tags(tags)
 
         output = await self._client.send_event_builder(builder)
         return output.id.to_hex()
 
-    async def close_competition(self, competition: CompetitionAnnouncement) -> str:
-        """Close a competition by publishing an inactive replacement (host).
+    async def close_bounty(self, bounty: BountyAnnouncement) -> str:
+        """Close a bounty by publishing an inactive replacement (host).
 
         Args:
-            competition: The competition to close (active flag will be set False)
+            bounty: The bounty to close (active flag will be set False)
 
         Returns:
             Event ID of the closing event
@@ -353,7 +353,7 @@ class SatoriNostr:
         Raises:
             RuntimeError: If client not running
         """
-        return await self.announce_competition(competition.close())
+        return await self.announce_bounty(bounty.close())
 
     async def publish_relay_list(self, relay_urls: list[str]) -> str:
         """Publish a NIP-65 relay list metadata event (kind 10002).
@@ -381,23 +381,23 @@ class SatoriNostr:
         output = await self._client.send_event_builder(builder)
         return output.id.to_hex()
 
-    async def discover_competitions(
+    async def discover_bounties(
         self,
         stream_name: str | None = None,
         active_only: bool = False,
         limit: int = 100,
-    ) -> list[CompetitionAnnouncement]:
-        """Discover available prediction competitions (predictor/observer).
+    ) -> list[BountyAnnouncement]:
+        """Discover available prediction bounties (predictor/observer).
 
-        Queries relays for competition announcements (kind 34607).
+        Queries relays for bounty announcements (kind 34607).
 
         Args:
             stream_name: Optional stream name to filter by
-            active_only: If True, only return competitions with active=True
+            active_only: If True, only return bounties with active=True
             limit: Maximum number of results
 
         Returns:
-            List of CompetitionAnnouncement
+            List of BountyAnnouncement
 
         Raises:
             RuntimeError: If client not running
@@ -405,7 +405,7 @@ class SatoriNostr:
         if not self._running or not self._client:
             raise RuntimeError("Client not running")
 
-        filter_builder = Filter().kind(Kind(KIND_COMPETITION_ANNOUNCE)).limit(limit)
+        filter_builder = Filter().kind(Kind(KIND_BOUNTY_ANNOUNCE)).limit(limit)
         if stream_name:
             filter_builder = filter_builder.custom_tag(
                 SingleLetterTag.lowercase(Alphabet.S), stream_name)
@@ -417,21 +417,21 @@ class SatoriNostr:
         # Deduplicate by d-tag keeping the latest event (parameterized replaceable).
         # Use content timestamp so close() (which bumps timestamp by 1) always wins
         # over the original even when both Nostr events share the same created_at second.
-        latest: dict[str, tuple[int, CompetitionAnnouncement]] = {}
+        latest: dict[str, tuple[int, BountyAnnouncement]] = {}
         for event in events:
             try:
-                c = CompetitionAnnouncement.from_json(event.content())
+                c = BountyAnnouncement.from_json(event.content())
                 d = c.d_tag()
                 ts = c.timestamp  # content timestamp, not Nostr event created_at
                 if d not in latest or ts > latest[d][0]:
                     latest[d] = (ts, c)
             except Exception as e:
-                print(f"Error parsing competition announcement: {e}")
+                print(f"Error parsing bounty announcement: {e}")
 
-        competitions = [c for _, c in latest.values()]
+        bounties = [c for _, c in latest.values()]
         if active_only:
-            competitions = [c for c in competitions if c.active]
-        return competitions
+            bounties = [c for c in bounties if c.active]
+        return bounties
 
     async def submit_prediction(
         self,
