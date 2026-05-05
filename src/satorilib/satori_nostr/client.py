@@ -442,7 +442,7 @@ class SatoriNostr:
         predicted_value: float,
         predictor_wallet_pubkey: str,
     ) -> str:
-        """Submit a prediction to a competition host (predictor).
+        """Submit a prediction to a bounty host (predictor).
 
         Sends an encrypted DM (kind 34608, NIP-04) directly to the host.
         Not broadcast publicly — only the host can decrypt it.
@@ -450,7 +450,7 @@ class SatoriNostr:
         Args:
             stream_name: Stream being predicted
             stream_provider_pubkey: Producer of the stream
-            host_pubkey: Competition host's Nostr pubkey
+            host_pubkey: Bounty host's Nostr pubkey
             seq_num: Observation sequence number being predicted
             predicted_value: The predictor's prediction
             predictor_wallet_pubkey: Predictor's EVRmore wallet pubkey, so the
