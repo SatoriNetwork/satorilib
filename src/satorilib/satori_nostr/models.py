@@ -375,14 +375,14 @@ class InboundChannelSettlement:
 
 
 @dataclass
-class CompetitionAnnouncement:
-    """Public announcement of a prediction competition hosted on a data stream.
+class BountyAnnouncement:
+    """Public announcement of a prediction bounty hosted on a data stream.
 
     Published as kind 34607 event (parameterized replaceable,
     d=stream_name:stream_provider_pubkey:host_pubkey).
 
     Re-publishing replaces the previous announcement. Setting active=False
-    (or publishing empty content) closes the competition.
+    (or publishing empty content) closes the bounty.
 
     pay_per_obs_sats is the total the host promises to pay per observation,
     distributed across predictors however the host chooses. paid_predictors
@@ -408,7 +408,7 @@ class CompetitionAnnouncement:
     def d_tag(self) -> str:
         return f'{self.stream_name}:{self.stream_provider_pubkey}:{self.host_pubkey}'
 
-    def close(self) -> 'CompetitionAnnouncement':
+    def close(self) -> 'BountyAnnouncement':
         import dataclasses
         return dataclasses.replace(
             self, active=False, timestamp=self.timestamp + 1)
@@ -417,20 +417,20 @@ class CompetitionAnnouncement:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'CompetitionAnnouncement':
+    def from_dict(cls, data: dict[str, Any]) -> 'BountyAnnouncement':
         return cls(**data)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
     @classmethod
-    def from_json(cls, json_str: str) -> 'CompetitionAnnouncement':
+    def from_json(cls, json_str: str) -> 'BountyAnnouncement':
         return cls.from_dict(json.loads(json_str))
 
 
 @dataclass
 class PredictionSubmission:
-    """A prediction sent from a predictor to a competition host.
+    """A prediction sent from a predictor to a bounty host.
 
     Sent as kind 34608 encrypted DM (NIP-04) directly to the host.
     Not broadcast publicly — only the host can read it.
@@ -516,7 +516,7 @@ KIND_PAYMENT = 34603                # Payment notification (parameterized replac
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
-KIND_COMPETITION_ANNOUNCE = 34607   # Competition announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
+KIND_BOUNTY_ANNOUNCE = 34607        # Bounty announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
 KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
 KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams)
 

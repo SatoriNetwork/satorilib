@@ -1,27 +1,27 @@
-"""Tests for competition announcement models (Phase 1).
+"""Tests for bounty announcement models (Phase 1).
 
-Covers: KIND_COMPETITION_ANNOUNCE constant, CompetitionAnnouncement dataclass.
+Covers: KIND_BOUNTY_ANNOUNCE constant, BountyAnnouncement dataclass.
 """
 import json
 import pytest
 
 from satorilib.satori_nostr.models import (
-    KIND_COMPETITION_ANNOUNCE,
-    CompetitionAnnouncement,
+    KIND_BOUNTY_ANNOUNCE,
+    BountyAnnouncement,
 )
 
 
 class TestKindConstants:
 
-    def test_kind_competition_announce_value(self):
-        assert KIND_COMPETITION_ANNOUNCE == 34607
+    def test_kind_bounty_announce_value(self):
+        assert KIND_BOUNTY_ANNOUNCE == 34607
 
 
-class TestCompetitionAnnouncement:
+class TestBountyAnnouncement:
 
     @pytest.fixture
     def sample(self):
-        return CompetitionAnnouncement(
+        return BountyAnnouncement(
             stream_name='btc-price-usd',
             stream_provider_pubkey='aabbcc',
             host_pubkey='ddeeff',
@@ -55,10 +55,10 @@ class TestCompetitionAnnouncement:
         assert d['active'] is True
 
     def test_from_dict_roundtrip(self, sample):
-        assert CompetitionAnnouncement.from_dict(sample.to_dict()) == sample
+        assert BountyAnnouncement.from_dict(sample.to_dict()) == sample
 
     def test_to_json_roundtrip(self, sample):
-        assert CompetitionAnnouncement.from_json(sample.to_json()) == sample
+        assert BountyAnnouncement.from_json(sample.to_json()) == sample
 
     def test_d_tag(self, sample):
         """d tag must uniquely identify stream+host for parameterized replaceable events."""
@@ -71,7 +71,7 @@ class TestCompetitionAnnouncement:
         assert closed.host_pubkey == sample.host_pubkey
 
     def test_scoring_params_defaults_to_empty_dict(self):
-        c = CompetitionAnnouncement(
+        c = BountyAnnouncement(
             stream_name='x',
             stream_provider_pubkey='aa',
             host_pubkey='bb',
