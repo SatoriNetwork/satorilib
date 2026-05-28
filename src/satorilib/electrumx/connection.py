@@ -68,10 +68,14 @@ class ElectrumxConnection:
                 self.connection = fallback_context.wrap_socket(
                     self.connection, server_hostname=self.host)
 
+    connectTimeout: int = 10
+
     def connect(self):
         self.createConnectionObject()
         try:
+            self.connection.settimeout(self.connectTimeout)
             self.connection.connect((self.host, self.port))
+            self.connection.settimeout(self.timeout)
             self.isConnected = True
         except (socket.error, ssl.SSLError) as e:
             logging.error(

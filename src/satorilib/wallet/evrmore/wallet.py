@@ -120,6 +120,10 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
                 self.electrumx = None
                 return self.maybeConnect(electrumx)
 
+    def getBalances(self):
+        self.maybeConnect()
+        super().getBalances()
+
     @property
     def symbol(self) -> str:
         return 'evr'
