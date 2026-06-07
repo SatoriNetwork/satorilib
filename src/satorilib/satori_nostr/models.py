@@ -520,6 +520,7 @@ KIND_BOUNTY_ANNOUNCE = 34607        # Bounty announcement (parameterized replace
 KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
 KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams)
 KIND_STREAM_VOTE_ALLOCATION = 34610 # Witness: stream vote allocation (parameterized replaceable, d=voter_nostr_pubkey)
+KIND_STREAM_FLAG = 34611 # Witness: stream flag/report (parameterized replaceable, d=flagger|||stream_name|||provider_pubkey)
 
 
 # Standard cadence values (in seconds)
