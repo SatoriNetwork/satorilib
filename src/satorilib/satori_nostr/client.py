@@ -1898,6 +1898,38 @@ class SatoriNostr:
         except Exception:
             pass  # not the intended recipient — silently discard
 
+    @staticmethod
+    def _verify_witness_wallet_sig(payload: dict, wallet_pubkey: str) -> bool:
+        """Verify the inner Evrmore wallet signature on a witness payload.
+
+        The signer canonicalizes the payload (sorted keys, compact separators)
+        WITHOUT 'evr_signature', signs that, then attaches the signature. We
+        reproduce that canonical form and verify it, mirroring central's
+        auth.py. Authority comes from this wallet signature (witness Model B),
+        not from the Nostr key that transported the event.
+        """
+        import base64
+        signature = payload.get('evr_signature')
+        if not signature or not wallet_pubkey:
+            return False
+        canonical = json.dumps(
+            {k: v for k, v in payload.items() if k != 'evr_signature'},
+            sort_keys=True, separators=(',', ':'))
+        try:
+            from satorilib.wallet.evrmore.verify import (
+                verify as _evr_verify, generateAddress)
+            try:
+                signature_bytes = base64.b64decode(signature)
+            except Exception:
+                signature_bytes = signature
+            return bool(_evr_verify(
+                message=canonical,
+                signature=signature_bytes,
+                publicKey=wallet_pubkey,
+                address=generateAddress(wallet_pubkey)))
+        except Exception:
+            return False
+
     async def _handle_witness_vote_event(self, event: Event) -> None:
         """Handle a stream vote allocation event (kind 34610)."""
         try:
@@ -1909,6 +1941,10 @@ class SatoriNostr:
                 return
             total = sum(a.get('percentage', 0) for a in allocs)
             if total > 100.0:
+                return
+            # Model B: reject unless the inner wallet signature is valid.
+            wallet_pubkey = payload.get('voter_wallet_pubkey', '')
+            if not self._verify_witness_wallet_sig(payload, wallet_pubkey):
                 return
             vote = {
                 'voter_nostr_pubkey': event.author().to_hex(),
@@ -1943,6 +1979,10 @@ class SatoriNostr:
             stream_name = payload.get('flagged_stream_name', '')
             provider_pubkey = payload.get('flagged_provider_pubkey', '')
             if not stream_name or not provider_pubkey:
+                return
+            # Model B: reject unless the inner wallet signature is valid.
+            wallet_pubkey = payload.get('flagger_wallet_pubkey', '')
+            if not self._verify_witness_wallet_sig(payload, wallet_pubkey):
                 return
             flag = {
                 'flagger_nostr_pubkey': event.author().to_hex(),
