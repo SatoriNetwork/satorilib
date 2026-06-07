@@ -59,6 +59,7 @@ from .models import (
     KIND_PREDICTION,
     KIND_ACCESS_REQUEST,
     KIND_STREAM_VOTE_ALLOCATION,
+    KIND_STREAM_FLAG,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -161,6 +162,7 @@ class SatoriNostr:
         self._prediction_queue: asyncio.Queue[InboundPrediction] = asyncio.Queue()
         self._access_request_queue: asyncio.Queue[InboundAccessRequest] = asyncio.Queue()
         self._witness_vote_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self._witness_flag_queue: asyncio.Queue[dict] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -1556,6 +1558,7 @@ class SatoriNostr:
             Kind(KIND_PREDICTION),
             Kind(KIND_ACCESS_REQUEST),
             Kind(KIND_STREAM_VOTE_ALLOCATION),
+            Kind(KIND_STREAM_FLAG),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1613,6 +1616,8 @@ class SatoriNostr:
             await self._handle_access_request_event(event)
         elif kind == KIND_STREAM_VOTE_ALLOCATION:
             await self._handle_witness_vote_event(event)
+        elif kind == KIND_STREAM_FLAG:
+            await self._handle_witness_flag_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1926,6 +1931,39 @@ class SatoriNostr:
                 vote = await asyncio.wait_for(
                     self._witness_vote_queue.get(), timeout=1.0)
                 yield vote
+            except asyncio.TimeoutError:
+                continue
+
+    async def _handle_witness_flag_event(self, event: Event) -> None:
+        """Handle a stream flag event (kind 34611)."""
+        try:
+            payload = json.loads(event.content())
+            if payload.get('action') != 'stream_flag':
+                return
+            stream_name = payload.get('flagged_stream_name', '')
+            provider_pubkey = payload.get('flagged_provider_pubkey', '')
+            if not stream_name or not provider_pubkey:
+                return
+            flag = {
+                'flagger_nostr_pubkey': event.author().to_hex(),
+                'flagged_stream_name': stream_name,
+                'flagged_provider_pubkey': provider_pubkey,
+                'retracted': bool(payload.get('retracted', False)),
+                'flagged_at': payload.get('flagged_at', 0),
+            }
+            await self._witness_flag_queue.put(flag)
+        except Exception:
+            pass
+
+    async def witness_stream_flags(self) -> AsyncIterator[dict]:
+        """Yield inbound stream flag events from other peers."""
+        if not self._running:
+            raise RuntimeError('Client not running')
+        while self._running:
+            try:
+                flag = await asyncio.wait_for(
+                    self._witness_flag_queue.get(), timeout=1.0)
+                yield flag
             except asyncio.TimeoutError:
                 continue
 
