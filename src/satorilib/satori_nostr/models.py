@@ -519,6 +519,7 @@ KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameter
 KIND_BOUNTY_ANNOUNCE = 34607        # Bounty announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
 KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
 KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams)
+KIND_STREAM_VOTE_ALLOCATION = 34610 # Witness: stream vote allocation (parameterized replaceable, d=voter_nostr_pubkey)
 
 
 # Standard cadence values (in seconds)

@@ -58,6 +58,7 @@ from .models import (
     KIND_BOUNTY_ANNOUNCE,
     KIND_PREDICTION,
     KIND_ACCESS_REQUEST,
+    KIND_STREAM_VOTE_ALLOCATION,
     compute_stream_topic_tag,
 )
 from .dedupe import DedupeCache
@@ -159,6 +160,7 @@ class SatoriNostr:
         self._tombstone_queue: asyncio.Queue[str] = asyncio.Queue()  # p2sh_address strings
         self._prediction_queue: asyncio.Queue[InboundPrediction] = asyncio.Queue()
         self._access_request_queue: asyncio.Queue[InboundAccessRequest] = asyncio.Queue()
+        self._witness_vote_queue: asyncio.Queue[dict] = asyncio.Queue()
 
         # Statistics
         self._stats = {
@@ -1553,6 +1555,7 @@ class SatoriNostr:
             Kind(KIND_CHANNEL_SETTLED),
             Kind(KIND_PREDICTION),
             Kind(KIND_ACCESS_REQUEST),
+            Kind(KIND_STREAM_VOTE_ALLOCATION),
         ])
         await self._client.subscribe(satori_filter)
 
@@ -1608,6 +1611,8 @@ class SatoriNostr:
             await self._handle_prediction_event(event)
         elif kind == KIND_ACCESS_REQUEST:
             await self._handle_access_request_event(event)
+        elif kind == KIND_STREAM_VOTE_ALLOCATION:
+            await self._handle_witness_vote_event(event)
 
     async def _handle_observation_event(self, event: Event) -> None:
         """Handle an observation data event (kind 34601).
@@ -1887,3 +1892,53 @@ class SatoriNostr:
             await self._access_request_queue.put(inbound)
         except Exception:
             pass  # not the intended recipient — silently discard
+
+    async def _handle_witness_vote_event(self, event: Event) -> None:
+        """Handle a stream vote allocation event (kind 34610)."""
+        try:
+            payload = json.loads(event.content())
+            if payload.get('action') != 'stream_vote_allocation':
+                return
+            allocs = payload.get('allocations', [])
+            if not isinstance(allocs, list) or not allocs:
+                return
+            total = sum(a.get('percentage', 0) for a in allocs)
+            if total > 100.0:
+                return
+            vote = {
+                'voter_nostr_pubkey': event.author().to_hex(),
+                'voter_wallet_pubkey': payload.get('voter_wallet_pubkey', ''),
+                'voter_evr_address': payload.get('voter_evr_address', ''),
+                'allocations': allocs,
+                'total_percentage': round(total, 4),
+                'allocated_at': payload.get('allocated_at', 0),
+            }
+            await self._witness_vote_queue.put(vote)
+        except Exception:
+            pass
+
+    async def witness_vote_allocations(self) -> AsyncIterator[dict]:
+        """Yield inbound stream vote allocation events from other peers."""
+        if not self._running:
+            raise RuntimeError('Client not running')
+        while self._running:
+            try:
+                vote = await asyncio.wait_for(
+                    self._witness_vote_queue.get(), timeout=1.0)
+                yield vote
+            except asyncio.TimeoutError:
+                continue
+
+    async def publish_witness_event(
+        self,
+        kind: int,
+        tags: list[list[str]],
+        content: str,
+    ) -> str:
+        """Publish a raw witness event. Returns event ID hex."""
+        if not self._running or not self._client:
+            raise RuntimeError('Client not running')
+        parsed_tags = [Tag.parse(t) for t in tags]
+        builder = EventBuilder(Kind(kind), content).tags(parsed_tags)
+        output = await self._client.send_event_builder(builder)
+        return output.id.to_hex()
