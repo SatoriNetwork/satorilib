@@ -4,9 +4,9 @@ import base58
 
 
 def isValidEvrmoreAddressBasic(address: str) -> bool:
-    '''Evrmore addresses typically start with 'E' and are 34 characters long'''
+    '''Evrmore addresses are 34 chars: P2PKH start with 'E', P2SH with 'e'.'''
     import re
-    pattern = r'^[E][a-zA-Z0-9]{33}$'
+    pattern = r'^[Ee][a-zA-Z0-9]{33}$'
     return bool(re.match(pattern, address))
 
 
@@ -31,7 +31,7 @@ def isValidEvrmoreAddress(address: str) -> bool:
     ''' Validate Evrmore address using Base58Check. '''
     if address is None:
         return False
-    if isinstance(address, str) and (len(address) != 34 or not address.startswith('E')):
+    if isinstance(address, str) and (len(address) != 34 or address[0] not in ('E', 'e')):
         return False
     try:
         from evrmore.wallet import CEvrmoreAddress
@@ -41,10 +41,10 @@ def isValidEvrmoreAddress(address: str) -> bool:
         is_valid, version = base58_check_decode(address)
         if not is_valid:
             return False
-        # Evrmore P2PKH (starts with 'E'), adjust the version byte accordingly
-        if version == 0x21:  # Example for Evrmore P2PKH (adjust if necessary)
+        # Evrmore P2PKH ('E', version 33/0x21) or P2SH multisig ('e', version 92/0x5c)
+        if version == 0x21:    # P2PKH
             return True
-        elif version == 0x5a:  # Example for Evrmore P2SH (adjust if necessary)
+        elif version == 0x5c:  # P2SH (multisig) — was wrongly 0x5a
             return True
         else:
             return False  # Invalid version byte

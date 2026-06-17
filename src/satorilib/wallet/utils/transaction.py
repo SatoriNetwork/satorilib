@@ -162,8 +162,13 @@ class TxUtils():
 
     @staticmethod
     def asSats(amount: float) -> int:
+        from decimal import Decimal
         from evrmore.core import COIN
-        return int(amount * COIN)
+        # Convert via Decimal(str(amount)) to avoid float truncation: plain
+        # int(amount * COIN) drops a satoshi when float noise makes e.g.
+        # 0.27677397 * 1e8 == 27677396.9999... Decimal(str(...)) reconstructs
+        # the exact decimal, and int() still floors genuine sub-sat values.
+        return int(Decimal(str(amount)) * COIN)
 
     @staticmethod
     def asAmount(sats: int, divisibility: int = 8) -> float:
