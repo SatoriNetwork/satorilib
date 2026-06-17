@@ -503,6 +503,131 @@ class EvermoreRpcClient:
         """
         return self._send_single("getblockchaininfo")
 
+    # ------------------------------------------------------------------
+    # Asset snapshots (Evrmore/Ravencoin-specific RPC)
+    #
+    # The daemon supports two methods for historical asset snapshots:
+    #   requestsnapshot ASSET_NAME BLOCK_HEIGHT
+    #       Queues a snapshot job.  Returns immediately.  The daemon
+    #       processes the request asynchronously.
+    #   getsnapshot ASSET_NAME BLOCK_HEIGHT
+    #       Returns the snapshot if processed, or an error if it is not
+    #       yet ready / never requested.
+    #
+    # `snapshot()` below is a convenience that does both with polling.
+    # ------------------------------------------------------------------
+
+    def request_snapshot(self, asset_name: str, block_height: int) -> Dict[str, Any]:
+        """
+        Queue a historical snapshot job for `asset_name` at `block_height`.
+
+        The daemon processes the request asynchronously.  This call returns
+        immediately with a status dict.  Use `get_snapshot()` afterwards
+        to retrieve the result, or use `snapshot()` to do both with polling.
+
+        Args:
+            asset_name:   Asset to snapshot (e.g. "SATORI" or "SATORI!")
+            block_height: Block height to snapshot at (must be <= current tip)
+
+        Returns:
+            Dict from the daemon, typically {"request_status": "Added"}.
+
+        Raises:
+            RpcError: If the asset doesn't exist, height is in the future,
+                      a duplicate request already exists, or the daemon
+                      doesn't have the asset index enabled.
+        """
+        if not asset_name:
+            raise ValueError("asset_name is required")
+        if block_height < 0:
+            raise ValueError(f"block_height must be >= 0, got {block_height}")
+        return self._send_single("requestsnapshot", [asset_name, int(block_height)])
+
+    def get_snapshot(self, asset_name: str, block_height: int) -> Dict[str, Any]:
+        """
+        Retrieve a previously-requested snapshot for `asset_name` at
+        `block_height`.
+
+        Args:
+            asset_name:   Asset name.
+            block_height: Block height previously passed to
+                          request_snapshot.
+
+        Returns:
+            Snapshot dict, typically of shape:
+                {
+                  "name": "<ASSET>",
+                  "height": <int>,
+                  "owners": [
+                      {"address": "<addr>", "amount_owned": <float>},
+                      ...
+                  ]
+                }
+
+        Raises:
+            RpcError: If the snapshot is not yet processed, was never
+                      requested, or the asset index is disabled.
+        """
+        if not asset_name:
+            raise ValueError("asset_name is required")
+        if block_height < 0:
+            raise ValueError(f"block_height must be >= 0, got {block_height}")
+        return self._send_single("getsnapshot", [asset_name, int(block_height)])
+
+    def snapshot(
+        self,
+        asset_name: str,
+        block_height: int,
+        poll_interval: float = 5.0,
+        timeout: float = 600.0,
+    ) -> Dict[str, Any]:
+        """
+        Convenience: queue a snapshot and poll until it is ready.
+
+        Args:
+            asset_name:    Asset to snapshot.
+            block_height:  Block height to snapshot at.
+            poll_interval: Seconds between get_snapshot attempts.
+            timeout:       Maximum seconds to wait before giving up.
+
+        Returns:
+            Snapshot dict (see get_snapshot for shape).
+
+        Raises:
+            TimeoutError: If the snapshot isn't ready within `timeout`.
+            RpcError:     Propagated from request_snapshot if the request
+                          is rejected outright.
+        """
+        # Best-effort request; ignore "already requested" responses.
+        try:
+            self.request_snapshot(asset_name, block_height)
+        except RpcError as e:
+            msg = (e.message or "").lower()
+            if "already" not in msg and "exists" not in msg:
+                raise
+
+        deadline = time.time() + timeout
+        last_err: Optional[Exception] = None
+        while time.time() < deadline:
+            try:
+                snap = self.get_snapshot(asset_name, block_height)
+                # daemon returns a dict with at least 'name'/'height'/'owners'
+                # when ready; an empty/None response means not ready yet
+                if snap and isinstance(snap, dict) and "owners" in snap:
+                    return snap
+            except RpcError as e:
+                last_err = e
+                msg = (e.message or "").lower()
+                # Anything other than "not ready" should be re-raised
+                if "not" not in msg and "pending" not in msg:
+                    raise
+            time.sleep(poll_interval)
+
+        raise TimeoutError(
+            f"snapshot({asset_name}, {block_height}) not ready within "
+            f"{timeout}s (last error: {last_err})"
+        )
+
     def _is_valid_hex(self, hex_str: str) -> bool:
         """Validate hex string"""
         if not hex_str:
