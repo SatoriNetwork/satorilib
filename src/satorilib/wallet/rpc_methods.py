@@ -212,7 +212,7 @@ class RpcMethodsMixin:
         This is REQUIRED for transaction building!
         """
         # Check unspents that need scriptPubKey
-        if 'SATORI' in self.watchAssets:
+        if 'SATORIEVR' in self.watchAssets:
             unspents = [
                 u for u in self.unspentCurrency + self.unspentAssets
                 if 'scriptPubKey' not in u
@@ -247,7 +247,7 @@ class RpcMethodsMixin:
                             uc['scriptPubKey'] = scriptPubKey
 
             # Same for assets
-            if 'SATORI' in self.watchAssets:
+            if 'SATORIEVR' in self.watchAssets:
                 for ua in self.unspentAssets:
                     if ua.get('scriptPubKey', None) is not None:
                         continue

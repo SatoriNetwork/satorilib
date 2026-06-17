@@ -52,7 +52,7 @@ def parse_satori_transaction(tx: dict) -> SatoriTransaction:
         script_pubkey = vout.get('scriptPubKey', {})
         asset = script_pubkey.get('asset')
 
-        if asset and asset.get('name') == 'SATORI':
+        if asset and asset.get('name') == 'SATORIEVR':
             addresses = script_pubkey.get('addresses', [])
             address = addresses[0] if addresses else None
 
@@ -69,7 +69,7 @@ def parse_satori_transaction(tx: dict) -> SatoriTransaction:
     # This would require fetching the previous transaction outputs
     for vin in tx.get('vin', []):
         # Check if this vin has asset information (non-standard)
-        if 'asset' in vin and vin['asset'].get('name') == 'SATORI':
+        if 'asset' in vin and vin['asset'].get('name') == 'SATORIEVR':
             inputs.append({
                 'address': vin.get('address'),
                 'amount': vin['asset'].get('amount', 0.0),

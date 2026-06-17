@@ -210,11 +210,11 @@ class AssetTransaction():
     evr = '657672'
     rvn = '72766e'
     t = '74'
-    satoriLen = '06'
-    satori = '5341544f5249'
+    satoriLen = '09'  # len('SATORIEVR')
+    satori = '5341544f5249455652'  # 'SATORIEVR'.encode().hex()
 
     @staticmethod
-    def satoriHex(currency: str, asset: str = 'SATORI') -> str:
+    def satoriHex(currency: str, asset: str = 'SATORIEVR') -> str:
         if currency.lower() == 'rvn':
             symbol = AssetTransaction.rvn
         elif currency.lower() == 'evr':

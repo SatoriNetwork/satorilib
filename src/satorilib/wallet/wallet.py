@@ -162,7 +162,7 @@ class Wallet(WalletBase):
             identity = Identity(walletPath=walletPath, password=password)
         super().__init__(identity=identity)
         self.skipSave = skipSave
-        self.watchAssets = ['SATORI'] if watchAssets is None else watchAssets
+        self.watchAssets = ['SATORIEVR'] if watchAssets is None else watchAssets
         # at $100 SATORI this is 1 penny (for evr tx fee)
         self.mundoFee = 0.0001
         # at $100 SATORI this is 1 dollar (for risk and gas fees), by BurnBridge
@@ -181,7 +181,7 @@ class Wallet(WalletBase):
         self.alias = None
         self.banner = None
         self.currency: Balance = Balance.empty('EVR')
-        self.balance: Balance = Balance.empty('SATORI')
+        self.balance: Balance = Balance.empty('SATORIEVR')
         self.divisibility = 8
         self.transactionHistory: list[dict] = []
         # TransactionStruct(*v)... {txid: (raw, vinVoutsTxs)}
@@ -583,7 +583,7 @@ class Wallet(WalletBase):
             return
         self.balances = self.electrumx.api.getBalances(scripthash=self.scripthash)
         self.currency = Balance.fromBalances('EVR', self.balances or {})
-        self.balance = Balance.fromBalances('SATORI', self.balances or {})
+        self.balance = Balance.fromBalances('SATORIEVR', self.balances or {})
         if self.balanceUpdatedCallback is not None:
             self.balanceUpdatedCallback(kind='wallet', evr=self.currency, satori=self.balance)
 
@@ -672,7 +672,7 @@ class Wallet(WalletBase):
             x for x in self.unspentCurrency
             if x.get('asset') == None]
         self.unspentAssets = []
-        if 'SATORI' in self.watchAssets:
+        if 'SATORIEVR' in self.watchAssets:
             # never used:
             #self.balanceOnChain = self.electrumx.api.getBalance(scripthash=self.scripthash)
             #logging.debug('self.balanceOnChain', self.balanceOnChain)
@@ -692,11 +692,11 @@ class Wallet(WalletBase):
             for x in self.unspentCurrency
             if x.get('asset') == None])
         self.currencyAmount = TxUtils.asAmount(self.currency or 0, 8)
-        if 'SATORI' in self.watchAssets:
+        if 'SATORIEVR' in self.watchAssets:
             self.balance = sum([
                 x.get('value', 0)
                 for x in self.unspentAssets
-                if (x.get('name', x.get('asset')) == 'SATORI' and
+                if (x.get('name', x.get('asset')) == 'SATORIEVR' and
                     x.get('value') > 0)])
             logging.debug('self.balance', self.balance)
             self.balance.amount = TxUtils.asAmount(
@@ -856,7 +856,7 @@ class Wallet(WalletBase):
         and it requires lots of calls for individual transactions.
         we just need them available when we're creating transactions.
         '''
-        if 'SATORI' in self.watchAssets:
+        if 'SATORIEVR' in self.watchAssets:
             unspents = [
                 u for u in self.unspentCurrency + self.unspentAssets
                 if 'scriptPubKey' not in u]
@@ -894,7 +894,7 @@ class Wallet(WalletBase):
                             'scriptPubKey', {}).get('hex', None)
                         if scriptPubKey is not None:
                             uc['scriptPubKey'] = scriptPubKey
-            if 'SATORI' in self.watchAssets:
+            if 'SATORIEVR' in self.watchAssets:
                 for ua in self.unspentAssets:
                     if ua.get('scriptPubKey', None) is not None:
                         continue
@@ -1037,7 +1037,7 @@ class Wallet(WalletBase):
         randomly: bool = False
     ) -> tuple[list, int]:
         unspentSatori = [x for x in (self.unspentAssets or []) if x.get(
-            'name', x.get('asset')) == 'SATORI' and x.get('value') > 0]
+            'name', x.get('asset')) == 'SATORIEVR' and x.get('value') > 0]
         unspentSatori = sorted(unspentSatori, key=lambda x: x['value'])
         haveSatori = sum([x.get('value') for x in unspentSatori])
         if not (haveSatori >= sats > 0):
@@ -2655,7 +2655,7 @@ class Wallet(WalletBase):
                 'sendAllTransaction: not enough currency for fee')
         # grab everything
         gatheredSatoriUnspents = [
-            x for x in self.unspentAssets if x.get('name', x.get('asset')) == 'SATORI']
+            x for x in self.unspentAssets if x.get('name', x.get('asset')) == 'SATORIEVR']
         gatheredCurrencyUnspents = self.unspentCurrency
         currencySats = sum([x.get('value') for x in gatheredCurrencyUnspents])
         # compile inputs
@@ -2755,7 +2755,7 @@ class Wallet(WalletBase):
     #            'sendAllTransaction: not enough Satori for fee')
     #    # grab everything
     #    gatheredSatoriUnspents = [
-    #        x for x in self.unspentAssets if x.get('name', x.get('asset')) == 'SATORI']
+    #        x for x in self.unspentAssets if x.get('name', x.get('asset')) == 'SATORIEVR']
     #    gatheredCurrencyUnspents = self.unspentCurrency
     #    currencySats = sum([x.get('value') for x in gatheredCurrencyUnspents])
     #    # compile inputs
@@ -2800,7 +2800,7 @@ class Wallet(WalletBase):
                 'sendAllTransaction: not enough Satori for fee')
         # grab everything
         gatheredSatoriUnspents = [
-            x for x in self.unspentAssets if x.get('name', x.get('asset')) == 'SATORI']
+            x for x in self.unspentAssets if x.get('name', x.get('asset')) == 'SATORIEVR']
         gatheredCurrencyUnspents = self.unspentCurrency
         currencySats = sum([x.get('value') for x in gatheredCurrencyUnspents])
         # compile inputs

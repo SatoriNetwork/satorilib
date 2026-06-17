@@ -118,7 +118,7 @@ class ElectrumxApi():
         '''
         return self.sendRequest(method='server.ping', interpret=False)
 
-    def getBalance(self, scripthash: str, targetAsset: Union[str, bool] = 'SATORI') -> dict:
+    def getBalance(self, scripthash: str, targetAsset: Union[str, bool] = 'SATORIEVR') -> dict:
         '''
         if targetAsset is True then it will return all assets
         {
@@ -192,7 +192,7 @@ class ElectrumxApi():
             method='blockchain.scripthash.listunspent',
             params=[scripthash] + ([True] if extraParam else []))
 
-    def getUnspentAssets(self, scripthash: str, targetAsset: str = 'SATORI') -> list:
+    def getUnspentAssets(self, scripthash: str, targetAsset: str = 'SATORIEVR') -> list:
         '''
         {
             'jsonrpc': '2.0',
@@ -209,16 +209,16 @@ class ElectrumxApi():
             method='blockchain.scripthash.listunspent',
             params=[scripthash, targetAsset])
 
-    def getStats(self, targetAsset: str = 'SATORI'):
+    def getStats(self, targetAsset: str = 'SATORIEVR'):
         return self.sendRequest(method='blockchain.asset.get_meta', params=[targetAsset])
 
     def getAssetBalanceForHolder(self, scripthash: str, throttle: int = 1):
         time.sleep(throttle)
         return self.sendRequest(
             method='blockchain.scripthash.get_asset_balance',
-            params=[True, scripthash]).get('confirmed', {}).get('SATORI', 0)
+            params=[True, scripthash]).get('confirmed', {}).get('SATORIEVR', 0)
 
-    def getAssetHolders(self, targetAddress: Union[str, None] = None, targetAsset: str = 'SATORI') -> Union[Dict[str, int], bool]:
+    def getAssetHolders(self, targetAddress: Union[str, None] = None, targetAsset: str = 'SATORIEVR') -> Union[Dict[str, int], bool]:
         addresses = {}
         last_addresses = None
         i = 0
