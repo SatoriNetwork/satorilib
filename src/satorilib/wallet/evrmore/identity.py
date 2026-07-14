@@ -4,6 +4,7 @@ from evrmore.wallet import P2PKHEvrmoreAddress, CEvrmoreAddress, CEvrmoreSecret
 from satorilib.wallet.identity import Identity
 from satorilib.wallet.evrmore.sign import signMessage
 from satorilib.wallet.evrmore.verify import verify
+from satorilib.wallet.cryptolock import WALLET_CRYPTO_LOCK
 
 class EvrmoreIdentity(Identity):
 
@@ -49,8 +50,10 @@ class EvrmoreIdentity(Identity):
         return str(P2PKHEvrmoreAddress.from_pubkey(pubkey))
 
     def _generatePrivateKey(self, compressed: bool = True):
-        SelectParams('mainnet')
-        return CEvrmoreSecret.from_secret_bytes(self._entropy, compressed=compressed)
+        # Native EC key construction is not thread-safe; serialize it.
+        with WALLET_CRYPTO_LOCK:
+            SelectParams('mainnet')
+            return CEvrmoreSecret.from_secret_bytes(self._entropy, compressed=compressed)
 
     def _generateAddress(self, pub=None):
         return P2PKHEvrmoreAddress.from_pubkey(pub or self._privateKeyObj.pub)
