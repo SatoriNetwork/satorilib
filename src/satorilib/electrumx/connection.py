@@ -32,7 +32,7 @@ class ElectrumxConnection:
 
     def closed(self) -> bool:
         ''' we closed the connection '''
-        return self.connection._closed
+        return self.connection is None or self.connection._closed
 
     def reconnect(self) -> bool:
         try:
@@ -45,6 +45,14 @@ class ElectrumxConnection:
             return False
 
     def createConnectionObject(self):
+        # release any prior socket's fd before replacing it, so a lingering
+        # descriptor can't be operated on mid-swap (a source of EBADF/'Bad
+        # file descriptor')
+        try:
+            if self.connection is not None:
+                self.connection.close()
+        except Exception:
+            pass
         self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connection.settimeout(self.timeout)
         if self.ssl:

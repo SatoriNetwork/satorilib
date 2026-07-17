@@ -93,17 +93,21 @@ class Electrumx(ElectrumxConnection):
     #    'timestamp': ['0','0','0','0','0','0','0','0','0','0','0','0','0','0','0']
     #})
 
+    # Stable servers first; evrx-1 last because its persistent connection tends
+    # to flap. Includes the extra hosts central maintains for more fallbacks.
     electrumxServers: list[str] = [
-        'evrx-1.satoriog.com:50002',
         'electrum1-mainnet.evrmorecoin.org:50002',
         'electrum2-mainnet.evrmorecoin.org:50002',
+        'electrumx1.satorinet.io:50002',
+        '167.71.11.203:50002',
+        'evrx-1.satoriog.com:50002',
     ]
 
     # subscriptions work better without ssl for some reason
     electrumxServersWithoutSSL: list[str] = [
-        'evrx-1.satoriog.com:50001',
         'electrum1-mainnet.evrmorecoin.org:50001',
         'electrum2-mainnet.evrmorecoin.org:50001',
+        'evrx-1.satoriog.com:50001',
     ]
 
     @staticmethod
@@ -457,12 +461,12 @@ class Electrumx(ElectrumxConnection):
             try:
                 if not self.connected():
                     logging.debug("Connection lost, attempting to reconnect...")
-                    self.connect()
-                    self.handshake()
-                    #self.resubscribe()
-                #else:
-                    # Send a ping to keep the connection alive
-                    #self.api.ping()
+                    # Route through the lock-protected reconnect() so the pinger
+                    # can't swap/close the socket concurrently with a request-path
+                    # reconnect — that race produced '[Errno 9] Bad file
+                    # descriptor'. reconnect() also resubscribes, which the old
+                    # connect()+handshake() path skipped.
+                    self.reconnect()
             except Exception as e:
                 logging.debug(f"Error in stayConnected: {str(e)}")
                 self.isConnected = False
@@ -568,4 +572,12 @@ class Electrumx(ElectrumxConnection):
     def resubscribe(self):
         if self.connected():
             for subscription in self.subscriptions.keys():
-                self.subscribe(subscription.method, *subscription.params)
+                # Guard each resubscribe: a single bad subscription (e.g. params
+                # that unpack wrong) must not propagate out of reconnect() and
+                # mark the freshly-established connection as down — that turned
+                # every reconnect into a flap loop.
+                try:
+                    self.subscribe(subscription.method, *subscription.params)
+                except Exception as e:
+                    logging.debug(
+                        f'resubscribe failed for {subscription.method}: {e}')
