@@ -95,11 +95,16 @@ class Electrumx(ElectrumxConnection):
 
     # Stable servers first; evrx-1 last because its persistent connection tends
     # to flap. Includes the extra hosts central maintains for more fallbacks.
+    #
+    # 167.71.11.203 (the pool box) was removed 2026-08-12: its ElectrumX stopped
+    # at block 1768205, mined 2026-03-20, and still answers queries normally
+    # from that stale tip. SATORIEVR was not issued until ~block 1896008, so it
+    # reports every wallet as holding 0 SATORIEVR. Re-add only once it is
+    # verifiably synced to the chain tip.
     electrumxServers: list[str] = [
         'electrum1-mainnet.evrmorecoin.org:50002',
         'electrum2-mainnet.evrmorecoin.org:50002',
         'electrumx1.satorinet.io:50002',
-        '167.71.11.203:50002',
         'evrx-1.satoriog.com:50002',
     ]
 
