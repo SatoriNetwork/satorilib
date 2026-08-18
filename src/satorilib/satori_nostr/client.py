@@ -22,11 +22,9 @@ from nostr_sdk import (
     Event,
     SecretKey,
     Timestamp,
-    NostrSigner,
     RelayUrl,
-    HandleNotification,
+    ReqTarget,
     SingleLetterTag,
-    Alphabet,
 )
 
 from .models import (
@@ -182,6 +180,24 @@ class SatoriNostr:
         """
         return self._keys.public_key().to_hex()
 
+    async def _send_builder(self, builder: EventBuilder) -> Event:
+        """Sign an EventBuilder with our keys and publish it.
+
+        The one place signing happens. nostr-sdk 0.45 removed
+        `Client.send_event_builder`, which used to do build-sign-send in one
+        step using a signer held by the client. The client no longer holds one,
+        so the three steps are explicit here rather than repeated at every call
+        site.
+
+        Returns the SIGNED EVENT rather than the send result: 0.45's
+        `SendEventOutput` exposes no id, and the id is what every caller
+        actually wanted.
+        """
+        unsigned = builder.finalize_unsigned(self._keys.public_key())
+        signed = self._keys.sign_event(unsigned)
+        await self._client.send_event(signed)
+        return signed
+
     def is_running(self) -> bool:
         """Check if client is currently running.
 
@@ -201,16 +217,21 @@ class SatoriNostr:
         if self._running:
             raise RuntimeError("Client is already running")
 
-        # Create nostr-sdk client
-        self._client = Client(NostrSigner.keys(self._keys))
+        # nostr-sdk 0.45 took the signer off the client: `Client()` has no
+        # arguments, `NostrSigner` became a protocol rather than a factory, and
+        # `send_event_builder` is gone. Events are now built, signed with the
+        # keys, and sent already-signed — see `_send_builder`.
+        self._client = Client()
 
         # Add relays
         for relay_url in self.config.relay_urls:
             await self._client.add_relay(RelayUrl.parse(relay_url))
 
-        # Connect to relays and wait for connection
-        await self._client.connect()
-        await self._client.wait_for_connection(timedelta(seconds=5))
+        # Connect to relays and wait for connection.
+        #
+        # 0.45 folded `wait_for_connection(timeout)` into `connect(and_wait)`:
+        # passing a duration connects AND waits, so the two calls became one.
+        await self._client.connect(timedelta(seconds=5))
 
         # Start listening for events
         self._listener_task = asyncio.create_task(self._event_listener())
@@ -300,13 +321,13 @@ class SatoriNostr:
         ).tags(tags)
 
         # Publish to relays
-        output = await self._client.send_event_builder(builder)
+        output = await self._send_builder(builder)
 
         if not deleted:
             # Track announced stream
             self._announced_streams[metadata.stream_name] = metadata
 
-        return output.id.to_hex()
+        return output.id().to_hex()
 
     async def announce_bounty(self, bounty: BountyAnnouncement) -> str:
         """Announce a prediction bounty (host).
@@ -338,8 +359,8 @@ class SatoriNostr:
             bounty.to_json(),
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def close_bounty(self, bounty: BountyAnnouncement) -> str:
         """Close a bounty by publishing an inactive replacement (host).
@@ -378,8 +399,8 @@ class SatoriNostr:
         tags = [Tag.parse(["r", url]) for url in relay_urls]
 
         builder = EventBuilder(Kind(10002), "").tags(tags)
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def discover_bounties(
         self,
@@ -407,12 +428,15 @@ class SatoriNostr:
 
         filter_builder = Filter().kind(Kind(KIND_BOUNTY_ANNOUNCE)).limit(limit)
         if stream_name:
+            # nostr-sdk 0.45 dropped the `Alphabet` enum and
+            # `SingleLetterTag.lowercase(...)`; a tag is now built from its byte.
+            # `ord("s")` is lowercase 's' by construction, which is what the old
+            # `Alphabet.S` + lowercase() pair spelled out.
             filter_builder = filter_builder.custom_tag(
-                SingleLetterTag.lowercase(Alphabet.S), stream_name)
+                SingleLetterTag.from_byte(ord("s")), stream_name)
 
-        events_obj = await self._client.fetch_events(
-            filter_builder, timedelta(seconds=10))
-        events = events_obj.to_vec()
+        events = await self._client.fetch_events(
+            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
 
         # Deduplicate by d-tag keeping the latest event (parameterized replaceable).
         # Use content timestamp so close() (which bumps timestamp by 1) always wins
@@ -487,8 +511,8 @@ class SatoriNostr:
         ]
 
         builder = EventBuilder(Kind(KIND_PREDICTION), encrypted).tags(tags)
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def incoming_predictions(self) -> AsyncIterator['InboundPrediction']:
         """Receive incoming prediction submissions (host).
@@ -555,8 +579,8 @@ class SatoriNostr:
                 content,
             ).tags(tags)
 
-            output = await self._client.send_event_builder(builder)
-            event_ids.append(output.id.to_hex())
+            output = await self._send_builder(builder)
+            event_ids.append(output.id().to_hex())
             self._stats["observations_sent"] += 1
         else:
             # Paid stream: send one event per eligible subscriber with only the
@@ -595,8 +619,8 @@ class SatoriNostr:
                         encrypted_value,
                     ).tags(tags)
 
-                    output = await self._client.send_event_builder(builder)
-                    event_ids.append(output.id.to_hex())
+                    output = await self._send_builder(builder)
+                    event_ids.append(output.id().to_hex())
                     self._stats["observations_sent"] += 1
 
                     if free:
@@ -624,8 +648,8 @@ class SatoriNostr:
                     builder = EventBuilder(
                         Kind(KIND_DATASTREAM_DATA), ""
                     ).tags(tags)
-                    output = await self._client.send_event_builder(builder)
-                    event_ids.append(output.id.to_hex())
+                    output = await self._send_builder(builder)
+                    event_ids.append(output.id().to_hex())
                 except Exception as e:
                     print(f"Error sending heartbeat for {stream_name}: {e}")
 
@@ -682,9 +706,9 @@ class SatoriNostr:
                 encrypted_value,
             ).tags(tags)
 
-            output = await self._client.send_event_builder(builder)
+            output = await self._send_builder(builder)
             self._stats["observations_sent"] += 1
-            return output.id.to_hex()
+            return output.id().to_hex()
         except Exception as e:
             print(f"Error resending to {subscriber_pubkey}: {e}")
             return None
@@ -787,16 +811,15 @@ class SatoriNostr:
                 filter_builder = filter_builder.hashtag(tag)
 
         # Query relays
-        events_obj = await self._client.fetch_events(
-            filter_builder, timedelta(seconds=10))
-        events = events_obj.to_vec()
+        events = await self._client.fetch_events(
+            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
 
         # Parse metadata from events, skipping tombstoned (deleted) streams
         datastreams = []
         for event in events:
             try:
                 # Skip events with status=deleted tag (tombstones)
-                tag_values = [t.as_vec() for t in event.tags().to_vec()]
+                tag_values = [t.to_vec() for t in event.tags()]
                 if ["status", "deleted"] in tag_values:
                     continue
                 metadata = DatastreamMetadata.from_json(event.content())
@@ -833,9 +856,8 @@ class SatoriNostr:
             .limit(1)
         )
 
-        events_obj = await self._client.fetch_events(
-            filter_builder, timedelta(seconds=10))
-        events = events_obj.to_vec()
+        events = await self._client.fetch_events(
+            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
 
         if not events:
             return None
@@ -902,9 +924,8 @@ class SatoriNostr:
             .identifier(stream_name)
             .limit(1)
         )
-        events_obj = await self._client.fetch_events(
-            filter_builder, timedelta(seconds=10))
-        events = events_obj.to_vec()
+        events = await self._client.fetch_events(
+            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
         if not events:
             return None
         try:
@@ -999,12 +1020,12 @@ class SatoriNostr:
             sub.to_json(),
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
+        output = await self._send_builder(builder)
 
         # Update statistics
         self._stats["subscriptions_announced"] += 1
 
-        return output.id.to_hex()
+        return output.id().to_hex()
 
     async def request_access(
         self,
@@ -1050,8 +1071,8 @@ class SatoriNostr:
         ]
 
         builder = EventBuilder(Kind(KIND_ACCESS_REQUEST), encrypted).tags(tags)
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def incoming_access_requests(self) -> AsyncIterator['InboundAccessRequest']:
         """Receive incoming access requests (producer).
@@ -1124,12 +1145,12 @@ class SatoriNostr:
             encrypted,
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
+        output = await self._send_builder(builder)
 
         # Update statistics
         self._stats["payments_sent"] += 1
 
-        return output.id.to_hex()
+        return output.id().to_hex()
 
     # ========================================================================
     # CHANNEL COMMITMENT APIs
@@ -1178,9 +1199,9 @@ class SatoriNostr:
             commitment.to_json(),
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
+        output = await self._send_builder(builder)
         self._stats["commitments_sent"] += 1
-        return output.id.to_hex()
+        return output.id().to_hex()
 
     async def get_commitment(self, p2sh_address: str) -> ChannelCommitment | None:
         """Fetch the latest commitment for a specific channel.
@@ -1206,8 +1227,8 @@ class SatoriNostr:
             .limit(1)
         )
 
-        events_obj = await self._client.fetch_events(filter_obj, timedelta(seconds=10))
-        events = events_obj.to_vec()
+        events = await self._client.fetch_events(
+            ReqTarget.auto([filter_obj]), timedelta(seconds=10))
 
         if not events:
             return None
@@ -1249,8 +1270,8 @@ class SatoriNostr:
             "",
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def publish_channel_open(
         self,
@@ -1283,8 +1304,8 @@ class SatoriNostr:
             channel_open.to_json(),
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def channel_opens(self) -> AsyncIterator[InboundChannelOpen]:
         """Receive incoming channel open announcements (receiver side).
@@ -1325,8 +1346,8 @@ class SatoriNostr:
             Kind(KIND_CHANNEL_SETTLED),
             settlement.to_json(),
         ).tags(tags)
-        output = await self._client.send_event_builder(builder)
-        return output.id.to_hex()
+        output = await self._send_builder(builder)
+        return output.id().to_hex()
 
     async def settlements(self) -> AsyncIterator[InboundChannelSettlement]:
         """Receive incoming channel settlement notifications (sender side)."""
@@ -1429,9 +1450,8 @@ class SatoriNostr:
         # Query for this specific stream (d-tag is the replaceable event identifier)
         filter_obj = Filter().kind(Kind(KIND_DATASTREAM_ANNOUNCE)).identifier(stream_name)
 
-        events_obj = await self._client.fetch_events(
-            filter_obj, timedelta(seconds=10))
-        events = events_obj.to_vec()
+        events = await self._client.fetch_events(
+            ReqTarget.auto([filter_obj]), timedelta(seconds=10))
 
         if events:
             try:
@@ -1493,9 +1513,9 @@ class SatoriNostr:
             unsub.to_json(),
         ).tags(tags)
 
-        output = await self._client.send_event_builder(builder)
+        output = await self._send_builder(builder)
 
-        return output.id.to_hex()
+        return output.id().to_hex()
 
     def get_statistics(self) -> dict[str, int]:
         """Get client statistics.
@@ -1554,20 +1574,31 @@ class SatoriNostr:
             Kind(KIND_PREDICTION),
             Kind(KIND_ACCESS_REQUEST),
         ])
-        await self._client.subscribe(satori_filter)
+        # 0.45 takes a ReqTarget rather than a bare Filter, so a subscription can
+        # say WHICH relays it is for. `auto` keeps the previous behaviour: send
+        # it to every connected relay.
+        await self._client.subscribe(ReqTarget.auto([satori_filter]))
 
-        # Process events via callback handler
-        client_ref = self
-
-        class _Handler(HandleNotification):
-            async def handle(self, relay_url, subscription_id, event):
-                await client_ref._handle_event(event)
-
-            async def handle_msg(self, relay_url, msg):
-                pass
-
+        # Drain the notification stream.
+        #
+        # nostr-sdk 0.45 replaced the push-style `handle_notifications(handler)`
+        # and its `HandleNotification` base class with a pull-style stream:
+        # `client.notifications()` yields `ClientNotification` variants and we
+        # iterate them. The three values the old callback received
+        # (relay_url, subscription_id, event) are the fields of NEW_EVENT, so
+        # only the plumbing changed, not the information.
         try:
-            await self._client.handle_notifications(_Handler())
+            notifications = self._client.notifications()
+            while True:
+                notification = await notifications.next()
+                if notification is None:
+                    break
+                if notification.is_shutdown():
+                    break
+                if notification.is_new_event():
+                    await self._handle_event(notification.event)
+                # MESSAGE carries relay protocol traffic (OK/EOSE/NOTICE), which
+                # this client does not act on. Ignored as before.
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1624,8 +1655,8 @@ class SatoriNostr:
                 return
 
             tag_map = {}
-            for tag in event.tags().to_vec():
-                vec = tag.as_vec()
+            for tag in event.tags():
+                vec = tag.to_vec()
                 if len(vec) >= 2:
                     tag_map[vec[0]] = vec[1]
 
@@ -1730,8 +1761,8 @@ class SatoriNostr:
         try:
             # Check for unsubscribe action tag
             action = None
-            for tag in event.tags().to_vec():
-                vec = tag.as_vec()
+            for tag in event.tags():
+                vec = tag.to_vec()
                 if len(vec) >= 2 and vec[0] == 'action':
                     action = vec[1]
                     break
@@ -1800,8 +1831,8 @@ class SatoriNostr:
             # Tombstone — queue the p2sh_address as a fallback reset signal
             if not content:
                 try:
-                    for tag in event.tags().to_vec():
-                        tag_vec = tag.as_vec()
+                    for tag in event.tags():
+                        tag_vec = tag.to_vec()
                         if len(tag_vec) >= 2 and tag_vec[0] == 'd':
                             await self._tombstone_queue.put(tag_vec[1])
                             break
@@ -1814,8 +1845,8 @@ class SatoriNostr:
             # Without this filter, stale third-party commitments on the relay
             # trigger unnecessary DB lookups and 3-second retries on reconnect.
             p_tag = None
-            for tag in event.tags().to_vec():
-                tag_vec = tag.as_vec()
+            for tag in event.tags():
+                tag_vec = tag.to_vec()
                 if len(tag_vec) >= 2 and tag_vec[0] == 'p':
                     p_tag = tag_vec[1]
                     break

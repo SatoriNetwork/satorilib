@@ -12,7 +12,25 @@ authors = [
     {name = "Satori Team"}
 ]
 
-dependencies = []
+# Declared 2026-08-18. This was an empty list, which is how the nostr-sdk 0.45
+# break went unnoticed: nothing pinned or floored the SDK, so `pip install
+# satorilib` picked up whatever was current and the client failed at import
+# with `cannot import name 'HandleNotification'`. An undeclared dependency is
+# not a dependency you do not have, it is one nobody can see.
+#
+# The floor is 0.45 because the client was migrated to that API and does NOT
+# work on 0.44.x: the signer came off the Client, `send_event_builder` and
+# `handle_notifications` were removed, `subscribe`/`fetch_events` take a
+# ReqTarget, and `Tag.as_vec` became `to_vec`.
+#
+# Only what satori_nostr needs is listed. Other subpackages (electrumx,
+# centrifugo, datamanager) have their own imports and remain undeclared; that is
+# the same latent problem, one subpackage at a time.
+dependencies = [
+    "nostr-sdk>=0.45.0",
+    "pycryptodome>=3.20",   # satorilib.utils.secret (Crypto.Cipher)
+    "websockets>=12",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
