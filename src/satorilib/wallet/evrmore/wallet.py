@@ -18,6 +18,7 @@ from satorilib.wallet.utils.transaction import TxUtils
 from satorilib.wallet.utils.validate import Validate
 from satorilib.wallet.wallet import Wallet
 from satorilib.wallet.evrmore.sign import signMessage
+from satorilib.wallet.cryptolock import WALLET_CRYPTO_LOCK
 from satorilib.wallet.evrmore.verify import verify
 from satorilib.wallet.evrmore.valid import isValidEvrmoreAddress
 from satorilib.wallet.identity import Identity
@@ -195,19 +196,21 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         return str(P2SHEvrmoreAddress.from_redeemScript(redeem_script))
 
     def _generatePrivateKey(self, compressed: bool = True, privkey: Union[str, bytes, None] = None):
-        SelectParams('mainnet')
-        if not self._entropy:
-            privkey = privkey or self.privateKey
-        if privkey:
-            if isinstance(privkey, str):
-                #return CEvrmoreSecret.from_secret_bytes(bytes.fromhex(privkey), compressed=compressed) # bytes below
-                #return CEvrmoreSecret.from_hex(privkey) # probably not hex
-                return CEvrmoreSecret(privkey)
-            elif isinstance(privkey, bytes):
-                return CEvrmoreSecret.from_secret_bytes(privkey, compressed=compressed)
-            else:
-                raise ValueError('privkey must be a string or bytes')
-        return CEvrmoreSecret.from_secret_bytes(self._entropy, compressed=compressed)
+        # Native EC key construction is not thread-safe; serialize it.
+        with WALLET_CRYPTO_LOCK:
+            SelectParams('mainnet')
+            if not self._entropy:
+                privkey = privkey or self.privateKey
+            if privkey:
+                if isinstance(privkey, str):
+                    #return CEvrmoreSecret.from_secret_bytes(bytes.fromhex(privkey), compressed=compressed) # bytes below
+                    #return CEvrmoreSecret.from_hex(privkey) # probably not hex
+                    return CEvrmoreSecret(privkey)
+                elif isinstance(privkey, bytes):
+                    return CEvrmoreSecret.from_secret_bytes(privkey, compressed=compressed)
+                else:
+                    raise ValueError('privkey must be a string or bytes')
+            return CEvrmoreSecret.from_secret_bytes(self._entropy, compressed=compressed)
 
     def _generateAddress(self, pub=None):
         return P2PKHEvrmoreAddress.from_pubkey(pub or self.identity._privateKeyObj.pub)
@@ -492,7 +495,8 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         if redeem_script:
             # This is a P2SH input
             sighash = SignatureHash(redeem_script, tx, i, sighashFlag)
-            sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
+            with WALLET_CRYPTO_LOCK:
+                sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
             
             if signatures:
                 # Multi-sig case
@@ -508,7 +512,8 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         else:
             # Regular P2PKH input
             sighash = SignatureHash(txinScriptPubKey, tx, i, sighashFlag)
-            sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
+            with WALLET_CRYPTO_LOCK:
+                sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
             txin.scriptSig = CScript([sig, self.identity._privateKeyObj.pub])
 
         try:
@@ -619,7 +624,8 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         redeemCount = len(txIds)
         for i in range(redeemCount):
             sighash = SignatureHash(redeemScript, tx, i, SIGHASH_ALL)
-            sig = self.identity._privateKeyObj.sign(sighash) + bytes([SIGHASH_ALL])
+            with WALLET_CRYPTO_LOCK:
+                sig = self.identity._privateKeyObj.sign(sighash) + bytes([SIGHASH_ALL])
             tx.vin[i].scriptSig = redeemParams(sig=sig) + redeemScript
         for i, (txin, txinScriptPubKey) in enumerate(
             zip(tx.vin, ([None] * redeemCount) + (extraVinsTxinScripts or []))
@@ -680,7 +686,8 @@ class EvrmoreWallet(Wallet, RpcMethodsMixin):
         (for fees) and outputs (for fee change).
         '''
         sighash = SignatureHash(redeemScript, tx, vinIndex, sighashFlag)
-        sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
+        with WALLET_CRYPTO_LOCK:
+            sig = self.identity._privateKeyObj.sign(sighash) + bytes([sighashFlag])
         return sig
 
     def _compileClaimOnP2SHMultiSigEnd(
