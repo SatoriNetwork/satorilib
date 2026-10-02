@@ -67,6 +67,22 @@ from .encryption import (
     EncryptionError,
 )
 
+# Satori relays (embedded strfry) return at most maxFilterLimit = 500
+# events per filter and accept at most maxReqFilterSize = 200 filters
+# per REQ.
+DISCOVERY_PAGE_SIZE = 500
+FILTER_CHUNK_SIZE = 200
+FOLLOW_SUBSCRIPTION_ID = "satori-follow"
+
+
+def _d_tag(event: Event) -> str:
+    """Return the event's `d` tag value, or '' if it has none."""
+    for tag in event.tags():
+        vec = tag.to_vec()
+        if len(vec) >= 2 and vec[0] == "d":
+            return vec[1]
+    return ""
+
 
 @dataclass
 class SubscriberState:
@@ -158,6 +174,10 @@ class SatoriNostr:
         self._prediction_queue: asyncio.Queue[InboundPrediction] = asyncio.Queue()
         self._access_request_queue: asyncio.Queue[InboundAccessRequest] = asyncio.Queue()
 
+        # Authors whose public events (observations, commitment tombstones)
+        # this client follows; see set_followed_authors().
+        self._followed_authors: list[str] | None = None
+
         # Statistics
         self._stats = {
             "observations_sent": 0,
@@ -233,8 +253,14 @@ class SatoriNostr:
         # passing a duration connects AND waits, so the two calls became one.
         await self._client.connect(timedelta(seconds=5))
 
-        # Start listening for events
-        self._listener_task = asyncio.create_task(self._event_listener())
+        # Open the notification stream before subscribing so no event that
+        # arrives in between is missed, then subscribe here (not in the
+        # listener task) so set_followed_authors() can never be overtaken
+        # by the default subscription.
+        notifications = self._client.notifications()
+        await self._subscribe_defaults()
+        self._listener_task = asyncio.create_task(
+            self._event_listener(notifications))
 
         self._running = True
 
@@ -783,15 +809,18 @@ class SatoriNostr:
     async def discover_datastreams(
         self,
         tags: list[str] | None = None,
-        limit: int = 100
+        limit: int | None = 100
     ) -> list[DatastreamMetadata]:
         """Discover available datastreams (subscriber).
 
-        Queries relays for datastream announcements (kind 34600).
+        Queries relays for datastream announcements (kind 34600), paging
+        backwards in time with `until`. Relays clamp each REQ to their own
+        max limit (strfry `maxFilterLimit`, 500 on Satori relays), so a
+        single REQ silently misses everything past the newest page.
 
         Args:
             tags: Optional list of tags to filter by
-            limit: Maximum number of results
+            limit: Maximum number of results (None = no cap)
 
         Returns:
             List of datastream metadata
@@ -802,30 +831,53 @@ class SatoriNostr:
         if not self._running or not self._client:
             raise RuntimeError("Client not running")
 
-        # Build filter
-        filter_builder = Filter().kind(Kind(KIND_DATASTREAM_ANNOUNCE)).limit(limit)
-
-        # Add tag filters if specified
-        if tags:
-            for tag in tags:
-                filter_builder = filter_builder.hashtag(tag)
-
-        # Query relays
-        events = await self._client.fetch_events(
-            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
-
-        # Parse metadata from events, skipping tombstoned (deleted) streams
+        seen_ids: set[str] = set()
+        seen_coords: set[tuple[str, str]] = set()
         datastreams = []
-        for event in events:
-            try:
-                # Skip events with status=deleted tag (tombstones)
-                tag_values = [t.to_vec() for t in event.tags()]
-                if ["status", "deleted"] in tag_values:
+        until = None
+        stepped = False
+        while True:
+            filter_builder = Filter().kind(
+                Kind(KIND_DATASTREAM_ANNOUNCE)).limit(DISCOVERY_PAGE_SIZE)
+            if tags:
+                for tag in tags:
+                    filter_builder = filter_builder.hashtag(tag)
+            if until is not None:
+                filter_builder = filter_builder.until(Timestamp.from_secs(until))
+
+            events = await self._client.fetch_events(
+                ReqTarget.auto([filter_builder]), timedelta(seconds=10))
+            new = [e for e in events if e.id().to_hex() not in seen_ids]
+            if not new:
+                # A page of only repeats means the boundary second is full;
+                # step past it once, then stop.
+                if until is None or stepped:
+                    break
+                until -= 1
+                stepped = True
+                continue
+            stepped = False
+
+            # Newest first, so the first event seen per (author, d) wins.
+            new.sort(key=lambda e: e.created_at().as_secs(), reverse=True)
+            for event in new:
+                seen_ids.add(event.id().to_hex())
+                coord = (event.author().to_hex(), _d_tag(event))
+                if coord in seen_coords:
                     continue
-                metadata = DatastreamMetadata.from_json(event.content())
-                datastreams.append(metadata)
-            except Exception as e:
-                print(f"Error parsing datastream metadata: {e}")
+                seen_coords.add(coord)
+                try:
+                    # Skip events with status=deleted tag (tombstones)
+                    tag_values = [t.to_vec() for t in event.tags()]
+                    if ["status", "deleted"] in tag_values:
+                        continue
+                    datastreams.append(
+                        DatastreamMetadata.from_json(event.content()))
+                except Exception as e:
+                    print(f"Error parsing datastream metadata: {e}")
+                if limit and len(datastreams) >= limit:
+                    return datastreams
+            until = min(e.created_at().as_secs() for e in new)
 
         return datastreams
 
@@ -861,8 +913,13 @@ class SatoriNostr:
 
         if not events:
             return None
+        return self.parse_observation_event(events[0])
 
-        event = events[0]
+    def parse_observation_event(self, event: Event) -> InboundObservation | None:
+        """Parse a kind 34601 event fetched from a relay.
+
+        Returns None for heartbeats and for events this client can't decrypt.
+        """
         try:
             sender_pubkey = event.author()
             content = event.content()
@@ -883,6 +940,75 @@ class SatoriNostr:
             )
         except Exception:
             return None
+
+    async def _fetch_latest_by_coordinate(
+        self, kind: int, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], Event]:
+        """Fetch the newest event of `kind` for each (author, d-tag) pair.
+
+        Builds one filter per author (authors=[a], identifiers=its names)
+        and packs up to FILTER_CHUNK_SIZE filters into each REQ, instead
+        of one REQ per stream.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        by_author: dict[str, list[str]] = {}
+        for author, name in dict.fromkeys(pairs):
+            by_author.setdefault(author, []).append(name)
+        filters = []
+        for author, names in by_author.items():
+            pubkey = PublicKey.parse(author)
+            for i in range(0, len(names), DISCOVERY_PAGE_SIZE):
+                chunk = names[i:i + DISCOVERY_PAGE_SIZE]
+                filters.append(
+                    Filter()
+                    .kind(Kind(kind))
+                    .authors([pubkey])
+                    .identifiers(chunk)
+                    .limit(len(chunk)))
+        wanted = set(pairs)
+        latest: dict[tuple[str, str], Event] = {}
+        for i in range(0, len(filters), FILTER_CHUNK_SIZE):
+            events = await self._client.fetch_events(
+                ReqTarget.auto(filters[i:i + FILTER_CHUNK_SIZE]),
+                timedelta(seconds=10))
+            for event in events:
+                key = (event.author().to_hex(), _d_tag(event))
+                if key not in wanted:
+                    continue
+                prev = latest.get(key)
+                if (prev is None or event.created_at().as_secs()
+                        > prev.created_at().as_secs()):
+                    latest[key] = event
+        return latest
+
+    async def get_last_observation_events(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], Event]:
+        """Latest observation event (kind 34601) per (provider_pubkey,
+        stream_name), batched. Read `created_at` for freshness (works for
+        paid streams too) or pass the event to parse_observation_event()."""
+        return await self._fetch_latest_by_coordinate(
+            KIND_DATASTREAM_DATA, pairs)
+
+    async def find_datastreams(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], DatastreamMetadata]:
+        """Look up specific datastream announcements by (provider_pubkey,
+        stream_name) without downloading the relay's whole catalog.
+        Tombstoned streams are omitted."""
+        found = {}
+        latest = await self._fetch_latest_by_coordinate(
+            KIND_DATASTREAM_ANNOUNCE, pairs)
+        for key, event in latest.items():
+            try:
+                tag_values = [t.to_vec() for t in event.tags()]
+                if ["status", "deleted"] in tag_values:
+                    continue
+                found[key] = DatastreamMetadata.from_json(event.content())
+            except Exception as e:
+                print(f"Error parsing datastream metadata: {e}")
+        return found
 
     async def get_last_observation_time(self, stream_name: str) -> int | None:
         """Get timestamp of the last published observation for a stream.
@@ -1558,13 +1684,41 @@ class SatoriNostr:
     # INTERNAL - Event Processing
     # ========================================================================
 
-    async def _event_listener(self) -> None:
-        """Background task that listens for incoming Nostr events."""
-        if not self._client:
-            return
+    async def set_followed_authors(self, pubkeys: list[str]) -> None:
+        """Follow public events from these authors: observations (34601)
+        and commitment tombstones (34604, which carry no `p` tag).
 
-        # Subscribe to all Satori event kinds
-        satori_filter = Filter().kinds([
+        Pass the providers we subscribe to plus the receivers of channels we
+        fund. Replaces the previous set; an empty list stops following.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        pubkeys = sorted(set(pubkeys))
+        if pubkeys == self._followed_authors:
+            return
+        self._followed_authors = pubkeys
+        try:
+            await self._client.unsubscribe(FOLLOW_SUBSCRIPTION_ID)
+        except Exception:
+            pass  # nothing to close yet
+        if not pubkeys:
+            return
+        filters = [
+            Filter()
+            .kinds([Kind(KIND_DATASTREAM_DATA), Kind(KIND_CHANNEL_COMMITMENT)])
+            .authors([PublicKey.parse(p)
+                      for p in pubkeys[i:i + FILTER_CHUNK_SIZE]])
+            for i in range(0, len(pubkeys), FILTER_CHUNK_SIZE)
+        ]
+        await self._client.subscribe(
+            ReqTarget.auto(filters), id=FOLLOW_SUBSCRIPTION_ID)
+
+    async def _subscribe_defaults(self) -> None:
+        """Subscribe to Satori events addressed to us, plus (until
+        set_followed_authors() narrows it) all public observations and
+        commitment tombstones."""
+        # Events addressed to us carry our pubkey in a `p` tag.
+        personal_filter = Filter().kinds([
             Kind(KIND_DATASTREAM_DATA),
             Kind(KIND_SUBSCRIPTION_ANNOUNCE),
             Kind(KIND_PAYMENT),
@@ -1573,12 +1727,24 @@ class SatoriNostr:
             Kind(KIND_CHANNEL_SETTLED),
             Kind(KIND_PREDICTION),
             Kind(KIND_ACCESS_REQUEST),
-        ])
+        ]).pubkey(self._keys.public_key())
         # 0.45 takes a ReqTarget rather than a bare Filter, so a subscription can
         # say WHICH relays it is for. `auto` keeps the previous behaviour: send
         # it to every connected relay.
-        await self._client.subscribe(ReqTarget.auto([satori_filter]))
+        await self._client.subscribe(ReqTarget.auto([personal_filter]))
+        # Public events (free observations, commitment tombstones) have no
+        # `p` tag. Default: all of them, as before. Callers that know whom
+        # they follow should narrow this with set_followed_authors() so the
+        # connection doesn't pull the relay's whole observation firehose.
+        public_filter = Filter().kinds([
+            Kind(KIND_DATASTREAM_DATA),
+            Kind(KIND_CHANNEL_COMMITMENT),
+        ])
+        await self._client.subscribe(
+            ReqTarget.auto([public_filter]), id=FOLLOW_SUBSCRIPTION_ID)
 
+    async def _event_listener(self, notifications) -> None:
+        """Background task that drains incoming Nostr events."""
         # Drain the notification stream.
         #
         # nostr-sdk 0.45 replaced the push-style `handle_notifications(handler)`
@@ -1588,7 +1754,6 @@ class SatoriNostr:
         # (relay_url, subscription_id, event) are the fields of NEW_EVENT, so
         # only the plumbing changed, not the information.
         try:
-            notifications = self._client.notifications()
             while True:
                 notification = await notifications.next()
                 if notification is None:

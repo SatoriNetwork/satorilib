@@ -17,8 +17,11 @@ from websockets.asyncio.server import serve
 class MiniRelay:
     """Minimal NIP-01 Nostr relay for testing."""
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, max_limit: int | None = None):
         self.events: list[dict] = []  # stored events
+        # Server-side cap on events per filter, like strfry maxFilterLimit.
+        self._max_limit = max_limit
+        self.req_count = 0
         # ws_id -> {sub_id: {"filters": [...], "ws": websocket}}
         self._live_subs: dict[str, dict] = {}
         self._server = None
@@ -122,9 +125,25 @@ class MiniRelay:
             self._live_subs[ws_id] = {}
         self._live_subs[ws_id][sub_id] = filters
 
-        # Send matching stored events
-        for event in self.events:
-            if self._matches_any_filter(event, filters):
+        self.req_count += 1
+
+        # Send matching stored events, newest first, honoring limit per
+        # filter (capped by max_limit)
+        sent = set()
+        newest_first = sorted(
+            self.events, key=lambda e: e.get("created_at", 0), reverse=True)
+        for filt in filters:
+            limit = filt.get("limit")
+            if self._max_limit is not None:
+                limit = min(limit or self._max_limit, self._max_limit)
+            count = 0
+            for event in newest_first:
+                if limit is not None and count >= limit:
+                    break
+                if event["id"] in sent or not self._matches_filter(event, filt):
+                    continue
+                sent.add(event["id"])
+                count += 1
                 await websocket.send(json.dumps(
                     ["EVENT", sub_id, event]))
 
