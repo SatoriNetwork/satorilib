@@ -41,6 +41,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.fernet import Fernet
+from eth_account import Account
+from eth_account.messages import encode_defunct
 from satorilib import logging
 from satorilib import config
 from satorilib.disk.utils import safetify
@@ -700,6 +702,17 @@ class Identity(IdentityBase):
 
     def sign(self, msg: str) -> bytes:
         ''' signs a message with the private key '''
+
+    def ethSign(self, msg: str) -> str:
+        '''
+        EIP-191 (Ethereum personal_sign) signature over msg by this wallet's
+        key, as 0x-prefixed hex of r || s || v (v is 27 or 28, s is low).
+        It recovers to this wallet's ethAddress. Central auth signs only this way.
+        '''
+        if self.isEncrypted:
+            raise Exception('cannot sign: wallet is locked')
+        signed = Account.sign_message(encode_defunct(text=msg), private_key=self._entropy)
+        return '0x' + bytes(signed.signature).hex()
 
     def verify(self,
         msg: str,

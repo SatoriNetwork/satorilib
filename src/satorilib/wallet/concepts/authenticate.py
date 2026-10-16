@@ -1,18 +1,19 @@
-# a satori node uses the wallet public key to connect to the server via signing a message.
-# the message is the date in UTC now that way the server doesn't have to give the client
-# a message to sign. so the client just sends up the public key and the sig. done.
+# a satori node authenticates to central by signing a message (central's challenge,
+# or the date in UTC now) and sending its public key, the message and the signature.
+# the signature is EIP-191 (Ethereum personal_sign); central recovers the signer and
+# compares it with the Ethereum address of wallet-pubkey.
 import json
 from satorilib.utils.time import nowStr
 
 
 def authPayload(wallet, challenge: str = None):
-    ''' see wallet_auth in server '''
+    ''' headers for central's legacy auth (see authenticate in central) '''
     challenge = challenge or getFullDateMessage()
     return {
         'message': challenge,
         'wallet-pubkey': wallet.pubkey,
         'address': wallet.address,
-        'signature': wallet.sign(challenge).decode()}
+        'signature': wallet.ethSign(challenge)}
 
 
 def getFullDateMessage():

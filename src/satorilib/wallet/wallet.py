@@ -36,6 +36,9 @@ class WalletBase:
     # Forward identity methods
     def sign(self, message: str) -> bytes:
         return self.identity.sign(message)
+
+    def ethSign(self, message: str) -> str:
+        return self.identity.ethSign(message)
         
     def verify(self, message: str, sig: bytes, address: Union[str, None] = None) -> bool:
         return self.identity.verify(message, sig, address)

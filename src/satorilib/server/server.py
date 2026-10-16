@@ -85,15 +85,10 @@ class SatoriServerClient(object):
         return str(time.time())
 
     def _login_with_jwt(self):
-        """Perform JWT login with wallet signature."""
+        """Perform JWT login with an EIP-191 wallet signature."""
         try:
             # Generate challenge (timestamp)
             challenge = str(time.time())
-
-            # Sign with wallet
-            signature = self.wallet.sign(challenge)
-            if isinstance(signature, bytes):
-                signature = signature.decode()
 
             # Call login endpoint
             response = requests.post(
@@ -101,7 +96,7 @@ class SatoriServerClient(object):
                 headers={
                     'wallet-pubkey': self.wallet.pubkey,
                     'message': challenge,
-                    'signature': signature
+                    'signature': self.wallet.ethSign(challenge)
                 },
                 timeout=15
             )

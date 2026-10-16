@@ -21,6 +21,13 @@ subpackages so that downstream applications can pull in only what they need.
 - **Server client** (`satorilib.server`)
   Authenticated HTTP client for the Satori central server: checkin,
   balances, stream and subscription management, and OFAC compliance helpers.
+  Every central-auth signature (JWT login, and the legacy header auth built
+  by `authPayload`) is EIP-191 (Ethereum `personal_sign`) by the wallet's own
+  key, from `wallet.ethSign(message)`: `0x` + r‖s‖v hex, v 27/28. Headers are
+  `wallet-pubkey` (compressed secp256k1 hex), `message`, `signature`; central
+  recovers the signer and compares it with the Ethereum address of
+  `wallet-pubkey`. This needs a central with EIP-191 login (its
+  `base-upgrade` branch, or later).
 - **Domain concepts** (`satorilib.concepts`)
   Canonical data structures for streams, observations, identifiers, and
   related domain objects shared across the network.
