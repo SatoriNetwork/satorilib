@@ -875,7 +875,8 @@ class SatoriServerClient(object):
         try:
             # No authentication needed - query by wallet_pubkey
             response = requests.get(
-                self.url + f'/api/v1/peer/reward-address?wallet_pubkey={self.wallet.pubkey}')
+                self.url + f'/api/v1/peer/reward-address?wallet_pubkey={self.wallet.pubkey}',
+                timeout=10)
 
             # 404 is expected for new peers that haven't registered yet
             if response.status_code == 404:

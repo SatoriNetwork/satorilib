@@ -49,3 +49,12 @@ def test_accepted_address():
     (url,), kwargs = post.call_args
     assert url == CENTRAL + "/api/v1/peer/reward-address"
     assert kwargs["headers"]["Authorization"] == "Bearer access"
+
+
+def test_reading_the_reward_address_has_a_timeout():
+    """The dashboard reads it from central on each load; it must not hang."""
+    client = _client()
+    with patch("satorilib.server.server.requests.get",
+               return_value=_response(200, '{"reward_address": null}')) as get:
+        assert client.mineToAddressStatus() == ""
+    assert get.call_args.kwargs.get("timeout")
