@@ -906,14 +906,16 @@ class SatoriServerClient(object):
         Set reward address for authenticated peer.
 
         Simplified to only require the address - auth is handled via
-        wallet headers from _makeAuthenticatedCall.
+        wallet headers from _makeAuthenticatedCall. A refusal (400 "Invalid
+        Base address") comes back as (False, body), not as an auth failure.
         '''
         try:
             # Call new v1 API with simplified payload
             response = self._makeAuthenticatedCall(
                 function=requests.post,
                 endpoint='/api/v1/peer/reward-address',
-                payload=json.dumps({'reward_address': address}))
+                payload=json.dumps({'reward_address': address}),
+                raiseForStatus=False)
             return response.status_code < 400, response.text
         except Exception as e:
             logging.warning(
