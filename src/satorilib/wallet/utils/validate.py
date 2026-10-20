@@ -9,4 +9,5 @@ class Validate():
 
     @staticmethod
     def ethAddress(address: str) -> bool:
-        return address.startswith("0x") and len(address) == 42
+        from satorilib.wallet.ethereum.valid import isValidEthereumAddress
+        return isValidEthereumAddress(address)
