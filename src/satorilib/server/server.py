@@ -31,7 +31,6 @@ from satorilib.utils.time import timeToTimestamp
 from satorilib.wallet import Wallet
 from satorilib.concepts.structs import Stream, StreamId
 from satorilib.server.api import ProposalSchema, VoteSchema
-from satorilib.utils.json import sanitizeJson
 from requests.exceptions import RequestException
 import json
 import traceback
@@ -549,161 +548,6 @@ class SatoriServerClient(object):
             function=requests.get,
             endpoint=f'/votes_for/sanction/{walletPubkey}/{vaultPubkey}').json()
 
-    def getSearchStreams(self, searchText: str = None):
-        '''
-        returns [{
-            'author': 27790,
-            'cadence': 600.0,
-            'datatype': 'float',
-            'description': 'Price AED 10min interval coinbase',
-            'oracle_address': 'EHJKq4EW2GfGBvhweasMXCZBVbAaTuDERS',
-            'oracle_alias': 'WilQSL_x10',
-            'oracle_pubkey': '03e3f3a15c2e174cac7ef8d1d9ff81e9d4ef7e33a59c20cc5cc142f9c69493f306',
-            'predicting_id': 0,
-            'sanctioned': 0,
-            'source': 'satori',
-            'stream': 'Coinbase.AED.USDT',
-            'stream_created_ts': 'Tue, 09 Jul 2024 10:20:11 GMT',
-            'stream_id': 326076,
-            'tags': 'AED, coinbase',
-            'target': 'data.rates.AED',
-            'total_vote': 6537.669052915435,
-            'url': 'https://api.coinbase.com/v2/exchange-rates',
-            'utc_offset': 227.0,
-            'vote': 33.333333333333336},...]
-        '''
-
-        def cleanAndSort(streams: str, searchText: str = None):
-            # Commenting down as of now, will be used in future if we need to make the call to server for search streams
-            # as of now we have limited streams so we can search in client side
-            # if searchText:
-            #     searchedStreams = [s for s in streams if searchText.lower() in s['stream'].lower()]
-            #     return sanitizeJson(searchedStreams)
-            sanitizedStreams = sanitizeJson(streams)
-            # sorting streams based on vote and total_vote
-            sortedStreams = sorted(
-                sanitizedStreams,
-                key=lambda x: (x.get('vote', 0) == 0, -
-                               x.get('vote', 0), -x.get('total_vote', 0))
-            )
-            return sortedStreams
-
-        return cleanAndSort(
-            streams=self._makeUnauthenticatedCall(
-                function=requests.post,
-                endpoint='/streams/search',
-                payload=json.dumps({'address': self.wallet.address})).json(),
-            searchText=searchText)
-    
-    def getSearchStreamsPaginated(self, searchText: str = None, page: int = 1, per_page: int = 100, 
-                            sort_by: str = 'popularity', order: str = 'desc') -> tuple[list, int]:
-        """ Get streams with full pagination information """
-        def cleanAndSort(streams: list, searchText: str = None):
-            """Clean and sanitize stream data"""
-            return sanitizeJson(streams)
-
-        # print("getSearchStreamsPaginated")
-        try:
-            page = max(1, page)
-            per_page = min(max(1, per_page), 200)
-            payload = {
-                'page': page,
-                'per_page': per_page,
-                'sort': sort_by,
-                'order': order
-            }
-            if hasattr(self, 'wallet') and self.wallet and hasattr(self.wallet, 'address'):
-                payload['address'] = self.wallet.address
-            
-            if searchText:
-                payload['search'] = searchText
-
-            response = self._makeUnauthenticatedCall(
-                function=requests.post,
-                endpoint='/streams/search/paginated',
-                payload=json.dumps(payload),
-            )
-            response_data = response.json()
-            
-            if isinstance(response_data, dict):
-                if 'streams' in response_data and 'pagination' in response_data:
-                    streams = cleanAndSort(response_data['streams'], searchText)
-                    pagination = response_data['pagination']
-                    total_count = pagination.get('total_count', len(streams))
-                    return streams, total_count
-                
-                elif 'streams' in response_data:
-                    streams = cleanAndSort(response_data['streams'], searchText)
-                    total_count = len(streams)  # Fallback
-                    return streams, total_count
-                    
-            elif isinstance(response_data, list):
-                streams = cleanAndSort(response_data, searchText)
-                total_count = len(streams)
-                return streams, total_count
-                
-            else:
-                logging.warning(f"Unexpected response format: {type(response_data)}")
-                return [], 0
-                    
-        except Exception as e:
-            logging.error(f"Error in getSearchStreamsPaginated: {str(e)}")
-            return [], 0
-
-    def getSearchPredictionStreamsPaginated(self, searchText: str = None, page: int = 1, per_page: int = 100, 
-                            sort_by: str = 'popularity', order: str = 'desc') -> tuple[list, int]:
-        """ Get prediction streams with full pagination information """
-        def cleanAndSort(streams: list, searchText: str = None):
-            """Clean and sanitize stream data"""
-            return sanitizeJson(streams)
-
-        try:
-            page = max(1, page)
-            per_page = min(max(1, per_page), 200)
-            payload = {
-                'page': page,
-                'per_page': per_page,
-                'sort': sort_by,
-                'order': order
-            }
-            if hasattr(self, 'wallet') and self.wallet and hasattr(self.wallet, 'address'):
-                payload['address'] = self.wallet.address
-            
-            if searchText:
-                payload['search'] = searchText
-
-            response = self._makeUnauthenticatedCall(
-                function=requests.post,
-                endpoint='/streams/search/prediction/paginated',
-                payload=json.dumps(payload),
-            )
-            response_data = response.json()
-            
-            if isinstance(response_data, dict):
-                if 'streams' in response_data and 'pagination' in response_data:
-                    streams = cleanAndSort(response_data['streams'], searchText)
-                    pagination = response_data['pagination']
-                    total_count = pagination.get('total_count', len(streams))
-                    return streams, total_count
-                
-                elif 'streams' in response_data:
-                    streams = cleanAndSort(response_data['streams'], searchText)
-                    total_count = len(streams)  # Fallback
-                    return streams, total_count
-                    
-            elif isinstance(response_data, list):
-                streams = cleanAndSort(response_data, searchText)
-                total_count = len(streams)
-                return streams, total_count
-                
-            else:
-                logging.warning(f"Unexpected response format: {type(response_data)}")
-                return [], 0
-                    
-        except Exception as e:
-            logging.error(f"Error in getSearchPredictionStreamsPaginated: {str(e)}")
-            return [], 0
-
     def marketStreamsSetPrice(self, streamUuid: str = None, pricePerObs: float = None) -> bool:
         """
         Set the price per observation for a stream.
@@ -852,12 +696,6 @@ class SatoriServerClient(object):
             endpoint='/clear_votes_on/sanction',
             useWallet=wallet).text
 
-    def poolParticipants(self, vaultAddress: str):
-        return self._makeAuthenticatedCall(
-            function=requests.post,
-            endpoint='/pool/participants',
-            payload=json.dumps({'vaultAddress': vaultAddress})).text
-
     def pinDepinStream(self, stream: dict = None) -> tuple[bool, str]:
         ''' removes a stream from the server '''
         if stream is None:
@@ -923,56 +761,6 @@ class SatoriServerClient(object):
                 'unable to set reward address; try again Later.', e, color='yellow')
             return False, ''
 
-    def stakeForAddress(
-        self,
-        vaultSignature: Union[str, bytes],
-        vaultPubkey: str,
-        address: str
-    ) -> tuple[bool, str]:
-        ''' add stake address '''
-        try:
-            if isinstance(vaultSignature, bytes):
-                vaultSignature = vaultSignature.decode()
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/stake/for/address',
-                raiseForStatus=False,
-                payload=json.dumps({
-                    'vaultSignature': vaultSignature,
-                    'vaultPubkey': vaultPubkey,
-                    'address': address}))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to determine status of mine to address feature due to connection timeout; try again Later.', e, color='yellow')
-            return False, ''
-
-    def lendToAddress(
-        self,
-        vaultSignature: Union[str, bytes],
-        vaultPubkey: str,
-        address: str,
-        vaultAddress: str = '',
-    ) -> tuple[bool, str]:
-        ''' add lend address '''
-        try:
-            if isinstance(vaultSignature, bytes):
-                vaultSignature = vaultSignature.decode()
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/stake/lend/to/address',
-                raiseForStatus=False,
-                payload=json.dumps({
-                    'vaultSignature': vaultSignature,
-                    'vaultAddress': vaultAddress,
-                    'vaultPubkey': vaultPubkey,
-                    'address': address}))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to determine status of mine to address feature due to connection timeout; try again Later.', e, color='yellow')
-            return False, ''
-
     def lendRemove(self) -> tuple[bool, dict]:
         ''' removes a stream from the server '''
         try:
@@ -1001,34 +789,6 @@ class SatoriServerClient(object):
                 'unable to get reward address; try again Later.', e, color='yellow')
             return ''
 
-    def registerVault(
-        self,
-        walletSignature: Union[str, bytes],
-        vaultSignature: Union[str, bytes],
-        vaultPubkey: str,
-        address: str,
-    ) -> tuple[bool, str]:
-        ''' removes a stream from the server '''
-        if isinstance(walletSignature, bytes):
-            walletSignature = walletSignature.decode()
-        if isinstance(vaultSignature, bytes):
-            vaultSignature = vaultSignature.decode()
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/register/vault',
-                payload=json.dumps({
-                    'walletSignature': walletSignature,
-                    'vaultSignature': vaultSignature,
-                    'vaultPubkey': vaultPubkey,
-                    'address': address}))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to register vault address due to connection timeout; try again Later.', e, color='yellow')
-            return False, ''
-
-
     def fetchWalletStatsDaily(self) -> str:
         ''' gets wallet stats '''
         try:
@@ -1055,80 +815,11 @@ class SatoriServerClient(object):
             return False
         return False
 
-    def setEthAddress(self, ethAddress: str) -> tuple[bool, dict]:
-        ''' removes a stream from the server '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/set/eth/address',
-                payload=json.dumps({'ethaddress': ethAddress}))
-            return response.status_code < 400, response.json()
-        except Exception as e:
-            logging.warning(
-                'unable to claim beta due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
-
-    def poolAddresses(self) -> tuple[bool, dict]:
-        ''' removes a stream from the server '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.get,
-                endpoint='/stake/lend/addresses')
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to stakeProxyRequest due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
-
     def poolAddressRemove(self, lend_id: str):
         return self._makeAuthenticatedCall(
             function=requests.post,
             endpoint='/stake/lend/address/remove',
             payload=json.dumps({'lend_id': lend_id})).text
-
-    def stakeProxyChildren(self) -> tuple[bool, dict]:
-        ''' removes a stream from the server '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.get,
-                endpoint='/stake/proxy/children')
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to stakeProxyRequest due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
-
-    def stakeProxyCharity(self, address: str, childId: int) -> tuple[bool, dict]:
-        ''' charity for stake '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/stake/proxy/charity',
-                payload=json.dumps({
-                    'child': address,
-                    **({} if childId in [None, 0, '0'] else {'childId': childId})
-                }))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to stakeProxyCharity due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
-
-    def stakeProxyCharityNot(self, address: str, childId: int) -> tuple[bool, dict]:
-        ''' no charity for stake '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/stake/proxy/charity/not',
-                payload=json.dumps({
-                    'child': address,
-                    **({} if childId in [None, 0, '0'] else {'childId': childId})
-                }))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to stakeProxyCharityNot due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
 
     def delegateGet(self) -> tuple[bool, str]:
         ''' my delegate '''
@@ -1152,32 +843,6 @@ class SatoriServerClient(object):
         except Exception as e:
             logging.warning(
                 'unable to delegateRemove due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
-
-    def stakeProxyRemove(self, address: str, childId: int) -> tuple[bool, dict]:
-        ''' removes a stream from the server '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/stake/proxy/remove',
-                payload=json.dumps({'child': address, 'childId': childId}))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to stakeProxyRemove due to connection timeout; try again Later.', e, color='yellow')
-            return False, {}
-
-    def invitedBy(self, address: str) -> tuple[bool, dict]:
-        ''' removes a stream from the server '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/invited/by',
-                payload=json.dumps({'referrer': address}))
-            return response.status_code < 400, response.text
-        except Exception as e:
-            logging.warning(
-                'unable to report referrer due to connection timeout; try again Later.', e, color='yellow')
             return False, {}
 
     def publish(
@@ -1592,92 +1257,6 @@ class SatoriServerClient(object):
             error_message = f"Error in getExpiredProposals: {str(e)}"
             return {'status': 'error', 'message': error_message}
 
-    def isApprovedAdmin(self, address: str) -> bool:
-        """Check if a wallet address has admin rights"""
-        if address not in {
-            "ES48mkqM5wMjoaZZLyezfrMXowWuhZ8u66",
-            "Efnsr27fc276Wp7hbAqZ5uo7Rn4ybrUqmi",
-            "EQGB7cBW3HvafARDoYsgceJS2W7ZhKe3b6",
-            "EHkDUkADkYnUY1cjCa5Lgc9qxLTMUQEBQm",
-        }:
-            return False
-        response = self._makeUnauthenticatedCall(
-            function=requests.get,
-            endpoint='/proposals/admin')
-        if response.status_code == 200:
-            return address in response.json()
-        return False
-
-    def getUnapprovedProposals(self, address: str = None) -> dict:
-        """Get unapproved proposals only if user has admin rights"""
-        try:
-            if not self.isApprovedAdmin(address):
-                return {
-                    'status': 'error',
-                    'message': 'Unauthorized access'
-                }
-
-            response = self._makeUnauthenticatedCall(
-                function=requests.get,
-                endpoint='/proposals/unapproved'
-            )
-
-            if response.status_code == 200:
-                return {
-                    'status': 'success',
-                    'proposals': response.json()
-                }
-            else:
-                return {
-                    'status': 'error',
-                    'message': 'Failed to fetch unapproved proposals'
-                }
-
-        except Exception as e:
-            logging.error(f"Error in getUnapprovedProposals: {str(e)}")
-            return {
-                'status': 'error',
-                'message': str(e)
-            }
-
-    def approveProposal(self, address: str, proposal_id: int) -> tuple[bool, dict]:
-        """Approve a proposal only if user has admin rights"""
-        try:
-            if not self.isApprovedAdmin(address):
-                return False, {'error': 'Unauthorized access'}
-
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint=f'/proposals/approve/{proposal_id}'
-            )
-
-            if response.status_code == 200:
-                return True, response.json()
-            else:
-                return False, {'error': f"Failed to approve proposal: {response.text}"}
-
-        except Exception as e:
-            return False, {'error': str(e)}
-
-    def disapproveProposal(self, address: str, proposal_id: int) -> tuple[bool, dict]:
-        """Disapprove a proposal only if user has admin rights"""
-        try:
-            if not self.isApprovedAdmin(address):
-                return False, {'error': 'Unauthorized access'}
-
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint=f'/proposals/disapprove/{proposal_id}'
-            )
-
-            if response.status_code == 200:
-                return True, response.json()
-            else:
-                return False, {'error': f"Failed to disapprove proposal: {response.text}"}
-
-        except Exception as e:
-            return False, {'error': str(e)}
-
     def getActiveProposals(self) -> dict:
         """
         Fetches active proposals
@@ -1739,76 +1318,6 @@ class SatoriServerClient(object):
 
     ## untested ##
 
-    def setPoolSize(self, poolStakeLimit: float) -> tuple[bool, dict]:
-        """
-        Function to set the pool size
-        """
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/pool/size/set',
-                payload=json.dumps({"poolStakeLimit": float(poolStakeLimit)}))
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in poolAcceptingWorkers: {str(e)}"
-            return False, {"error": error_message}
-
-    def setPoolWorkerReward(self, rewardPercentage: float) -> tuple[bool, dict]:
-        """
-        Function to set the pool status to accepting or not accepting
-        """
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.post,
-                endpoint='/pool/worker/reward/set',
-                payload=json.dumps({"rewardPercentage": float(rewardPercentage)}))
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in poolAcceptingWorkers: {str(e)}"
-            return False, {"error": error_message}
-
-    def getPoolSize(self, address: str) -> tuple[bool, dict]:
-        """
-        Function to set the pool status to accepting or not accepting
-        """
-        try:
-            response = self._makeUnauthenticatedCall(
-                function=requests.get,
-                endpoint=f'/pool/size/get/{address}')
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in poolAcceptingWorkers: {str(e)}"
-            return False, {"error": error_message}
-
-    def getPoolWorkerReward(self, address: str) -> tuple[bool, dict]:
-        """
-        Function to set the pool status to accepting or not accepting
-        """
-        try:
-            response = self._makeUnauthenticatedCall(
-                function=requests.get,
-                endpoint=f'/pool/worker/reward/get/{address}')
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in poolAcceptingWorkers: {str(e)}"
-            return False, {"error": error_message}
-
     def setMiningMode(self, status: bool) -> tuple[bool, dict]:
         """
         Function to set the worker mining mode
@@ -1817,23 +1326,6 @@ class SatoriServerClient(object):
             response = self._makeAuthenticatedCall(
                 function=requests.get,
                 endpoint='/worker/mining/mode/enable' if status else '/worker/mining/mode/disable')
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in setMiningMode: {str(e)}"
-            return False, {"error": error_message}
-
-    def getMiningMode(self, address) -> tuple[bool, dict]:
-        """
-        Function to set the worker mining mode
-        """
-        try:
-            response = self._makeUnauthenticatedCall(
-                function=requests.get,
-                endpoint=f'/worker/mining/mode/get/{address}')
             if response.status_code == 200:
                 return True, response.text
             else:
@@ -1922,60 +1414,6 @@ class SatoriServerClient(object):
         except Exception as e:
             error_message = f"Error in setMiningMode: {str(e)}"
             return False, {"error": error_message}
-
-
-    def getDataManagerPort(self) -> tuple[bool, list]:
-        """
-        gets the datamanager port for a wallet
-        """
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.t,
-                endpoint='/api/v0/datamanager/port/get')
-            if 200 <= response.status_code < 400:
-                return True, response.json()
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in setMiningMode: {str(e)}"
-            return False, {"error": error_message}
-
-    def getDataManagerPortByAddress(self, address:str) -> tuple[bool, list]:
-        """
-        gets the datamanager port for a wallet
-        """
-        try:
-            response = self._makeUnauthenticatedCall(
-                function=requests.get,
-                endpoint='/api/v0/datamanager/port/get/{address}')
-            if 200 <= response.status_code < 400:
-                return True, response.json()
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in setMiningMode: {str(e)}"
-            return False, {"error": error_message}
-
-    def setDataManagerPort(self, port: int) -> tuple[bool, list]:
-        """
-        asks the central server (could ask fellow Neurons) if our own dataserver
-        is publically reachable.
-        """
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.get,
-                endpoint=f'/api/v0/datamanager/port/set/{port}')
-            if 200 <= response.status_code < 400:
-                return True, response.json()
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in setMiningMode: {str(e)}"
-            return False, {"error": error_message}
-
 
     def getContentCreated(self) -> tuple[bool, dict]:
         try:
