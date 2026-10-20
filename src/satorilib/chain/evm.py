@@ -28,6 +28,9 @@ class EvmClient:
         self.rpc_url = rpc_url
         self._private_key = private_key
         self._w3 = w3
+        # Next nonce per account after our own sends: a load-balanced RPC can
+        # still report the count from before the last send ("nonce too low").
+        self._next_nonce = {}
 
     @property
     def w3(self):
@@ -67,9 +70,11 @@ class EvmClient:
             raise RuntimeError("no signing key for send")
         account = self.w3.eth.account.from_key(key)
         gas_price = self.w3.eth.gas_price
+        nonce = max(self.w3.eth.get_transaction_count(account.address, "pending"),
+                    self._next_nonce.get(account.address, 0))
         tx = {
             "from": account.address,
-            "nonce": self.w3.eth.get_transaction_count(account.address),
+            "nonce": nonce,
             "chainId": self.w3.eth.chain_id,
             "maxFeePerGas": gas_price * 2,
             "maxPriorityFeePerGas": gas_price,
@@ -84,6 +89,7 @@ class EvmClient:
             tx["gas"] = self.w3.eth.estimate_gas(tx)
         signed = account.sign_transaction(tx)
         txhash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        self._next_nonce[account.address] = nonce + 1
         receipt = self.w3.eth.wait_for_transaction_receipt(txhash)
         h = txhash.hex()
         h = h if h.startswith("0x") else "0x" + h
