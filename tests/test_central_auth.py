@@ -161,10 +161,10 @@ def test_locked_vault_cannot_sign(vaultPath):
 
 def test_authPayload_shape(vectorWallet, noEvrmoreSigning):
     payload = vectorWallet.authPayload(asDict=True, challenge=MESSAGE)
+    # no Evrmore address: central reads only these three headers
     assert payload == {
         "message": MESSAGE,
         "wallet-pubkey": PUBKEY,
-        "address": EVRMORE_ADDRESS,
         "signature": EIP191_SIG,
     }
     assert json.loads(vectorWallet.authPayload(challenge=MESSAGE)) == payload

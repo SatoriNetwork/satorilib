@@ -12,7 +12,6 @@ def authPayload(wallet, challenge: str = None):
     return {
         'message': challenge,
         'wallet-pubkey': wallet.pubkey,
-        'address': wallet.address,
         'signature': wallet.ethSign(challenge)}
 
 
