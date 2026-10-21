@@ -1,0 +1,28 @@
+{
+ "made": "Once, 2026-10-21, by the browser neuron's own code (Satori/satori: src/chain/channels.js signVoucher and voucherDigest; the binding is viem's signMessage of src/neuron/market.js bindingText), with the throwaway key below, chain 84532 and PaymentChannels 0xeF3f87042cd9619729E5D69Da2fF90F89EA6976c. Signatures are deterministic (RFC 6979), so satorilib must produce these exact bytes.",
+ "key": "0x2222222222222222222222222222222222222222222222222222222222222222",
+ "address": "0x1563915e194D8CfBA1943570603F7606A3115508",
+ "channelId": "0x8583220d4efcb3f12a6812a3e36dad41949de1843f37bfe07b3bacdcf4c658a8",
+ "vouchers": [
+  {
+   "cumulative": "1",
+   "digest": "0x025754880e515cd315919c61ae725a5417045e744d9473893b5a84dd2c65e07a",
+   "signature": "0x2ec082d68fcfc9da64b31a0d97b185c8b0e61c5d31da1e4797959c1d77e097f91d6932665a06bd78d1e2f0a5e5dd90bad37d712fd29d25b94a753e9158e7df921c"
+  },
+  {
+   "cumulative": "10000000000000",
+   "digest": "0x7e815170371da527a3836dd6577482f515b0e6d0332b16e878bcae7bc6e03750",
+   "signature": "0x02b584fda8b77b67c0a13be9ac556d011dd86a08c64371331038e00d6648ad5026eb2b1c165183eb64d33d2f9c89de1527af1484d7f42c61f2bbe3572e9bcb3e1b"
+  },
+  {
+   "cumulative": "24000000000000000",
+   "digest": "0x93e459765af2eb967b840df84035f947135b472af31632f1c45f80644719319e",
+   "signature": "0xf8713c43884f5aae629707a7284edb18b404dc4fdc91cbb5bde8f4d16129a9211ba3e55063b1eb6145eed32e0d9a5e72d36db728559c60110e925cca0d26d7a21c"
+  }
+ ],
+ "binding": {
+  "nostr": "62756113cd917a659263ead50da0f538d97a5d4cbf0c573464140364f9a98cc8",
+  "text": "satori-market:v1:0x8583220d4efcb3f12a6812a3e36dad41949de1843f37bfe07b3bacdcf4c658a8:62756113cd917a659263ead50da0f538d97a5d4cbf0c573464140364f9a98cc8",
+  "signature": "0x0289527cb80bffbb642d5f5d77f19eb7867fe4338fc481c12866b8fd5e3247d942f5a49cb398ee5ec0bae81830aac77e23fbbdce9af34c65acad64c1a46449fb1b"
+ }
+}
