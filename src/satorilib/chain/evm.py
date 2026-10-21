@@ -60,11 +60,14 @@ class EvmClient:
         from web3 import Web3
         return self.w3.eth.call({"to": Web3.to_checksum_address(to), "data": data})
 
-    def send(self, fn=None, private_key: str = None, to: str = None, data: str = None) -> str:
+    def send(self, fn=None, private_key: str = None, to: str = None, data: str = None,
+             gas_pad: int = 0) -> str:
         """Build → sign → send → wait for a transaction, returning the 0x tx
         hash. Provide either a contract function `fn` (its target/calldata come
         from it) OR a raw (`to`, `data`) pair. Signs with `private_key` or the
-        client's key. Raises on missing key or on-chain revert."""
+        client's key. `gas_pad` is added to the gas estimate: a SATORI payment
+        into a staked vault runs the token's hook, which a bare estimate can
+        starve. Raises on missing key or on-chain revert."""
         key = private_key or self._private_key
         if not key:
             raise RuntimeError("no signing key for send")
@@ -87,6 +90,7 @@ class EvmClient:
             tx["value"] = 0
             tx["data"] = data
             tx["gas"] = self.w3.eth.estimate_gas(tx)
+        tx["gas"] += int(gas_pad)
         signed = account.sign_transaction(tx)
         txhash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         self._next_nonce[account.address] = nonce + 1

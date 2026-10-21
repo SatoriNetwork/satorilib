@@ -56,3 +56,13 @@ def test_the_node_wins_when_it_is_ahead():
     c.w3.eth.count = 1050  # sent from elsewhere meanwhile
     c.send(to=TO, data="0x")
     assert c.w3.eth.sent == [1040, 1050]
+
+
+def test_gas_pad_is_added_to_the_estimate():
+    c = _client(1)
+    signed = []
+    c.w3.eth.account = SimpleNamespace(from_key=lambda key: SimpleNamespace(
+        address=_Account.address, sign_transaction=lambda tx: signed.append(tx) or SimpleNamespace(raw_transaction=0)))
+    c.send(to=TO, data="0x", gas_pad=500_000)
+    c.send(to=TO, data="0x")
+    assert [tx["gas"] for tx in signed] == [521_000, 21_000]
