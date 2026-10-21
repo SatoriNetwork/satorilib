@@ -266,7 +266,9 @@ class TestFollowedAuthors:
             tombstones = []
             while not client._tombstone_queue.empty():
                 tombstones.append(client._tombstone_queue.get_nowait())
-            subscribers = client.get_subscribers("mine")
+            subscribers = []
+            while not client._subscription_queue.empty():
+                subscribers.append(client._subscription_queue.get_nowait().subscription.subscriber_pubkey)
         finally:
             await client.stop()
             await pub.stop()

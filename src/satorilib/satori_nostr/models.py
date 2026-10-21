@@ -155,7 +155,9 @@ class SubscriptionAnnouncement:
     stream_name: str         # What they're subscribing to
     nostr_pubkey: str        # Who provides the stream (hex)
     timestamp: int           # When subscription started (Unix timestamp)
-    payment_channel: str | None = None  # Optional: Lightning channel address
+    # A paid stream's channel on Base: {chain, contract, id, binding}, binding =
+    # the buyer identity's EIP-191 signature of satori-market:v1:<id>:<buyer's Nostr pubkey>
+    payment_channel: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -182,15 +184,17 @@ class PaymentNotification:
 
     Published as kind 34603 event (encrypted DM to provider).
     Public metadata visible: stream_name, seq_num, timestamp
-    Private: amount (optional), transaction details
+    Private: amount, the voucher
     """
     from_pubkey: str         # Subscriber's public key (hex)
     to_pubkey: str           # Provider's public key (hex)
     stream_name: str         # What stream this payment is for
     seq_num: int             # Which observation this payment covers
-    amount_sats: int         # Payment amount in satoshis
+    amount_sats: int         # Payment amount in satoshis (10^-8 SATORI): the price
     timestamp: int           # When payment was sent (Unix timestamp)
-    tx_id: str | None = None # Optional: Lightning transaction/payment proof
+    # The buyer identity's cumulative EIP-712 voucher on the channel:
+    # {channel, cumulative (wei, decimal string), signature}
+    voucher: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -270,6 +274,16 @@ class InboundObservation:
     observation: DatastreamObservation  # The actual observation data
     event_id: str                       # Nostr event ID
     raw_event: dict[str, Any] | None = None  # Optional raw Nostr event
+    paid: bool = False                  # A paid stream's delivery to us (p = us, the value encrypted)
+
+
+@dataclass
+class InboundSubscription:
+    """A subscription or unsubscription (kind 34602) to one of our streams,
+    sent by the subscriber itself (the event's author)."""
+    subscription: SubscriptionAnnouncement
+    unsubscribe: bool
+    event_id: str
 
 
 @dataclass
@@ -510,7 +524,7 @@ class InboundAccessRequest:
 
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
-KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name — relay keeps latest per stream)
+KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name; a paid delivery d=stream_name:subscriber)
 KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized replaceable, d=stream_name)
 KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name)
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)

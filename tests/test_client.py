@@ -17,7 +17,7 @@ import json
 import pytest
 import pytest_asyncio
 
-from nostr_sdk import Keys, SecretKey
+from nostr_sdk import EventBuilder, Keys, Kind, SecretKey, Tag
 
 from satorilib.satori_nostr import (
     SatoriNostr,
@@ -28,8 +28,8 @@ from satorilib.satori_nostr import (
     PaymentNotification,
     InboundObservation,
     InboundPayment,
-    SubscriberState,
 )
+from satorilib.satori_nostr.encryption import decrypt_observation, decrypt_payment
 from satorilib.satori_nostr.encryption import encrypt_observation, encrypt_payment
 from tests.mini_relay import MiniRelay
 
@@ -120,70 +120,6 @@ class TestClientConstruction:
 # =========================================================================
 
 class TestStateManagement:
-    def test_record_subscription(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        sub_pubkey = Keys.generate().public_key().to_hex()
-        client.record_subscription("test-stream", sub_pubkey)
-        subs = client.get_subscribers("test-stream")
-        assert sub_pubkey in subs
-
-    def test_get_subscribers_empty(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        assert client.get_subscribers("nonexistent") == []
-
-    def test_record_multiple_subscribers(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        sub1 = Keys.generate().public_key().to_hex()
-        sub2 = Keys.generate().public_key().to_hex()
-        client.record_subscription("test-stream", sub1)
-        client.record_subscription("test-stream", sub2)
-        subs = client.get_subscribers("test-stream")
-        assert len(subs) == 2
-        assert sub1 in subs
-        assert sub2 in subs
-
-    def test_record_payment(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        sub_pubkey = Keys.generate().public_key().to_hex()
-        client.record_subscription("test-stream", sub_pubkey)
-        client.record_payment("test-stream", sub_pubkey, seq_num=5)
-        info = client.get_subscriber_info("test-stream", sub_pubkey)
-        assert info is not None
-        assert info.last_paid_seq == 5
-
-    def test_record_payment_keeps_highest(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        sub_pubkey = Keys.generate().public_key().to_hex()
-        client.record_subscription("test-stream", sub_pubkey)
-        client.record_payment("test-stream", sub_pubkey, seq_num=5)
-        client.record_payment("test-stream", sub_pubkey, seq_num=3)
-        info = client.get_subscriber_info("test-stream", sub_pubkey)
-        assert info.last_paid_seq == 5
-
-    def test_record_payment_updates_higher(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        sub_pubkey = Keys.generate().public_key().to_hex()
-        client.record_subscription("test-stream", sub_pubkey)
-        client.record_payment("test-stream", sub_pubkey, seq_num=3)
-        client.record_payment("test-stream", sub_pubkey, seq_num=7)
-        info = client.get_subscriber_info("test-stream", sub_pubkey)
-        assert info.last_paid_seq == 7
-
-    def test_get_subscriber_info_nonexistent(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        assert client.get_subscriber_info("x", "y") is None
-
-    def test_get_all_subscribers_info(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        sub1 = Keys.generate().public_key().to_hex()
-        sub2 = Keys.generate().public_key().to_hex()
-        client.record_subscription("test-stream", sub1, payment_channel="ln1")
-        client.record_subscription("test-stream", sub2)
-        all_info = client.get_all_subscribers_info("test-stream")
-        assert len(all_info) == 2
-        assert all_info[sub1].payment_channel == "ln1"
-        assert all_info[sub2].payment_channel is None
-
     def test_list_announced_streams_empty(self, provider_keys, relay_url):
         client = SatoriNostr(make_config(provider_keys, relay_url))
         assert client.list_announced_streams() == []
@@ -262,47 +198,50 @@ class TestProviderAPIs:
             await client.stop()
 
     @pytest.mark.asyncio
-    async def test_publish_paid_no_subscribers(self, provider_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
+    async def test_publish_paid_sends_only_the_public_heartbeat(self, provider_keys):
+        relay = MiniRelay()
+        await relay.start()
+        client = SatoriNostr(make_config(provider_keys, relay.url))
         await client.start()
         try:
-            metadata = make_paid_metadata(provider_keys)
-            obs = make_observation(stream_name="paid-stream")
-            event_ids = await client.publish_observation(obs, metadata)
-            assert event_ids == []  # no subscribers = no events sent
-        finally:
-            await client.stop()
-
-    @pytest.mark.asyncio
-    async def test_publish_paid_with_subscriber(self, provider_keys, subscriber_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
-        await client.start()
-        try:
-            sub_pubkey = subscriber_keys.public_key().to_hex()
-            client.record_subscription("paid-stream", sub_pubkey)
-            client.record_payment("paid-stream", sub_pubkey, seq_num=10)
-
             metadata = make_paid_metadata(provider_keys)
             obs = make_observation(stream_name="paid-stream", seq_num=5)
             event_ids = await client.publish_observation(obs, metadata)
-            assert len(event_ids) == 1  # sent to one subscriber
+            assert len(event_ids) == 1
+            [ev] = [e for e in relay.events if e["id"] == event_ids[0]]
+            assert ev["content"] == ""
+            assert ev["tags"] == [["d", "paid-stream"], ["stream", "paid-stream"], ["seq", "5"],
+                                  ["timestamp", str(obs.timestamp)], ["satori", "heartbeat"]]
         finally:
             await client.stop()
+            await relay.stop()
 
     @pytest.mark.asyncio
-    async def test_publish_paid_subscriber_not_paid_enough(self, provider_keys, subscriber_keys, relay_url):
-        client = SatoriNostr(make_config(provider_keys, relay_url))
+    async def test_deliver_observation_one_event_per_buyer(self, provider_keys, subscriber_keys):
+        """d = <stream>:<buyer> (a relay keeps one event per d), the value
+        encrypted to that buyer alone, seq and timestamp in tags."""
+        relay = MiniRelay()
+        await relay.start()
+        client = SatoriNostr(make_config(provider_keys, relay.url))
         await client.start()
         try:
-            sub_pubkey = subscriber_keys.public_key().to_hex()
-            client.record_subscription("paid-stream", sub_pubkey)
-            client.record_payment("paid-stream", sub_pubkey, seq_num=3)
-
-            metadata = make_paid_metadata(provider_keys)
-            # seq_num 5 > last_paid_seq 3, so subscriber shouldn't get it
-            obs = make_observation(stream_name="paid-stream", seq_num=5)
-            event_ids = await client.publish_observation(obs, metadata)
-            assert event_ids == []
+            buyer = subscriber_keys.public_key().to_hex()
+            other = Keys.generate()
+            obs = DatastreamObservation(stream_name="paid-stream", timestamp=1_792_100_000, value=101.5, seq_num=7)
+            ids = [await client.deliver_observation(obs, buyer),
+                   await client.deliver_observation(obs, other.public_key().to_hex())]
+            assert all(ids) and ids[0] != ids[1]
+            ev = next(e for e in relay.events if e["id"] == ids[0])
+            assert ev["kind"] == 34601
+            assert ev["tags"] == [["d", f"paid-stream:{buyer}"], ["p", buyer], ["stream", "paid-stream"],
+                                  ["seq", "7"], ["timestamp", "1792100000"], ["satori", "observation"]]
+            assert "101.5" not in ev["content"]
+            assert decrypt_observation(ev["content"], provider_keys.public_key(), subscriber_keys) == "101.5"
+            with pytest.raises(Exception):
+                decrypt_observation(ev["content"], provider_keys.public_key(), other)
+            assert client.get_statistics()["observations_sent"] == 2
+            await relay.stop()  # no relay takes it: not delivered
+            assert await client.deliver_observation(obs, buyer) is None
         finally:
             await client.stop()
 
@@ -633,18 +572,28 @@ class TestPaymentE2E:
                 provider_keys, stream_name=stream_name)
             await provider.announce_datastream(metadata)
 
-            # Record subscriber so provider knows them
             sub_pub = subscriber_keys.public_key().to_hex()
-            provider.record_subscription(stream_name, sub_pub)
-
             await asyncio.sleep(0.5)
 
+            # A payment claiming to be the subscriber's, from another key: dropped
+            forger = SatoriNostr(make_config(Keys.generate(), relay_url))
+            await forger.start()
+            forged = PaymentNotification(
+                from_pubkey=sub_pub, to_pubkey=provider_keys.public_key().to_hex(),
+                stream_name=stream_name, seq_num=1, amount_sats=999, timestamp=1)
+            await forger._send_builder(EventBuilder(Kind(34603), encrypt_payment(
+                forged.to_json(), provider_keys.public_key(), forger._keys)).tags(
+                [Tag.parse(["p", provider_keys.public_key().to_hex()])]))
+            await forger.stop()
+
             # Subscriber sends payment
+            voucher = {"channel": "0x" + "ab" * 32, "cumulative": "10000000000000", "signature": "0x" + "cd" * 65}
             await subscriber.send_payment(
                 provider_pubkey=provider_keys.public_key().to_hex(),
                 stream_name=stream_name,
                 seq_num=1,
                 amount_sats=100,
+                voucher=voucher,
             )
 
             # Provider receives payment
@@ -658,6 +607,7 @@ class TestPaymentE2E:
             assert received.payment.amount_sats == 100
             assert received.payment.seq_num == 1
             assert received.payment.from_pubkey == sub_pub
+            assert received.payment.voucher == voucher
 
         finally:
             await provider.stop()
@@ -686,16 +636,25 @@ class TestSubscriptionEventE2E:
             await provider.announce_datastream(metadata)
             await asyncio.sleep(0.3)
 
-            # Subscriber subscribes
+            # Subscriber subscribes, naming its channel, then unsubscribes
+            channel = {"chain": 84532, "contract": "0xeF3f87042cd9619729E5D69Da2fF90F89EA6976c",
+                       "id": "0x" + "ab" * 32, "binding": "0x" + "cd" * 65}
             await subscriber.subscribe_datastream(
+                stream_name, provider_keys.public_key().to_hex(), payment_channel=channel)
+            await subscriber.unsubscribe_datastream(
                 stream_name, provider_keys.public_key().to_hex())
 
-            # Wait for event to propagate
-            await asyncio.sleep(1.0)
-
-            # Provider should have recorded the subscription
-            subs = provider.get_subscribers(stream_name)
-            assert subscriber_keys.public_key().to_hex() in subs
+            got = []
+            async for inbound in provider.subscriptions():
+                got.append(inbound)
+                if len(got) == 2:
+                    break
+            got.sort(key=lambda i: i.unsubscribe)
+            assert [(i.subscription.subscriber_pubkey, i.subscription.stream_name, i.unsubscribe)
+                    for i in got] == [(subscriber_keys.public_key().to_hex(), stream_name, False),
+                                      (subscriber_keys.public_key().to_hex(), stream_name, True)]
+            assert got[0].subscription.payment_channel == channel
+            assert got[1].subscription.payment_channel is None
 
         finally:
             await provider.stop()

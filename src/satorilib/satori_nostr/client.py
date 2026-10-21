@@ -41,6 +41,7 @@ from .models import (
     InboundPrediction,
     InboundObservation,
     InboundPayment,
+    InboundSubscription,
     InboundCommitment,
     InboundChannelOpen,
     InboundChannelSettlement,
@@ -82,16 +83,6 @@ def _d_tag(event: Event) -> str:
         if len(vec) >= 2 and vec[0] == "d":
             return vec[1]
     return ""
-
-
-@dataclass
-class SubscriberState:
-    """Tracks state for a single subscriber to a datastream."""
-    subscriber_pubkey: str
-    stream_name: str
-    last_paid_seq: int | None = None  # Last seq_num they paid for
-    payment_channel: str | None = None
-    subscribed_at: int = 0  # Unix timestamp
 
 
 class SatoriNostr:
@@ -157,16 +148,13 @@ class SatoriNostr:
         self._running = False
         self._dedupe = DedupeCache()
 
-        # Subscriber tracking (for providers)
-        # stream_name -> {subscriber_pubkey -> SubscriberState}
-        self._subscribers: dict[str, dict[str, SubscriberState]] = {}
-
         # Track announced streams (for providers)
         self._announced_streams: dict[str, DatastreamMetadata] = {}
 
         # Event queues for async iteration
         self._observation_queue: asyncio.Queue[InboundObservation] = asyncio.Queue()
         self._payment_queue: asyncio.Queue[InboundPayment] = asyncio.Queue()
+        self._subscription_queue: asyncio.Queue[InboundSubscription] = asyncio.Queue()
         self._commitment_queue: asyncio.Queue[InboundCommitment] = asyncio.Queue()
         self._channel_open_queue: asyncio.Queue[InboundChannelOpen] = asyncio.Queue()
         self._settlement_queue: asyncio.Queue[InboundChannelSettlement] = asyncio.Queue()
@@ -558,17 +546,19 @@ class SatoriNostr:
         observation: DatastreamObservation,
         stream_metadata: DatastreamMetadata
     ) -> list[str]:
-        """Publish an observation to all paid subscribers (provider).
+        """Publish an observation (provider).
 
-        Sends encrypted DMs (kind 34601) to each subscriber who has paid
-        for this observation's sequence number.
+        A free stream: one public 34601 with the observation. A paid stream:
+        its public heartbeat (d=stream_name, seq and timestamp in tags, no
+        value) on every observation; the value goes to each paying buyer
+        with deliver_observation(), which the market decides.
 
         Args:
             observation: The observation to publish
             stream_metadata: Metadata about this stream (for pricing info)
 
         Returns:
-            List of event IDs (one per subscriber sent to)
+            List of event IDs
 
         Raises:
             RuntimeError: If client not running
@@ -578,9 +568,6 @@ class SatoriNostr:
 
         stream_name = observation.stream_name
         seq_num = observation.seq_num
-
-        # Get subscribers for this stream
-        stream_subscribers = self._subscribers.get(stream_name, {})
 
         event_ids = []
         obs_json = observation.to_json()
@@ -609,198 +596,57 @@ class SatoriNostr:
             event_ids.append(output.id().to_hex())
             self._stats["observations_sent"] += 1
         else:
-            # Paid stream: send one event per eligible subscriber with only the
-            # value encrypted in content. All other metadata (seq, timestamp,
-            # stream_name) goes in plaintext tags. This eliminates the need for
-            # a separate heartbeat event — the tags alone carry enough info for
-            # marketplace freshness checks — and removes the d-tag collision
-            # where heartbeat and encrypted obs shared the same replaceable
-            # d-tag, causing the relay to suppress the encrypted delivery.
-            value_str = str(observation.value)
-
-            for sub_pubkey, sub_state in stream_subscribers.items():
-                paid = (sub_state.last_paid_seq is not None
-                        and sub_state.last_paid_seq >= seq_num)
-                free = sub_state.last_paid_seq is None
-
-                if not (paid or free):
-                    continue
-
-                try:
-                    recipient_pubkey = PublicKey.parse(sub_pubkey)
-                    encrypted_value = encrypt_observation(
-                        value_str, recipient_pubkey, self._keys)
-
-                    tags = [
-                        Tag.parse(["d", stream_name]),
-                        Tag.parse(["p", sub_pubkey]),
-                        Tag.parse(["stream", stream_name]),
-                        Tag.parse(["seq", str(seq_num)]),
-                        Tag.parse(["timestamp", str(observation.timestamp)]),
-                        Tag.parse(["satori", "observation"]),
-                    ]
-
-                    builder = EventBuilder(
-                        Kind(KIND_DATASTREAM_DATA),
-                        encrypted_value,
-                    ).tags(tags)
-
-                    output = await self._send_builder(builder)
-                    event_ids.append(output.id().to_hex())
-                    self._stats["observations_sent"] += 1
-
-                    if free:
-                        sub_state.last_paid_seq = seq_num
-
-                except Exception as e:
-                    print(f"Error sending to {sub_pubkey}: {e}")
-
-            # Zero-subscriber freshness fallback. When a paid stream has no
-            # eligible recipients (all lapsed, none funded yet) the per-sub
-            # loop emits nothing and the relay's last event ages out — the
-            # marketplace then shows the stream as stale and no new
-            # subscriber discovers it. Send one tags-only event so the relay
-            # has a fresh created_at for freshness checks. No `p` tag, empty
-            # body — leaks no value to non-paying subs.
-            if not event_ids and stream_metadata.price_per_obs > 0:
-                try:
-                    tags = [
-                        Tag.parse(["d", stream_name]),
-                        Tag.parse(["stream", stream_name]),
-                        Tag.parse(["seq", str(seq_num)]),
-                        Tag.parse(["timestamp", str(observation.timestamp)]),
-                        Tag.parse(["satori", "heartbeat"]),
-                    ]
-                    builder = EventBuilder(
-                        Kind(KIND_DATASTREAM_DATA), ""
-                    ).tags(tags)
-                    output = await self._send_builder(builder)
-                    event_ids.append(output.id().to_hex())
-                except Exception as e:
-                    print(f"Error sending heartbeat for {stream_name}: {e}")
-
-        return event_ids
-
-    async def send_observation_to_subscriber(
-        self,
-        observation: DatastreamObservation,
-        stream_metadata: DatastreamMetadata,
-        subscriber_pubkey: str,
-    ) -> str | None:
-        """Send a specific observation to a single subscriber (provider).
-
-        Used for gap recovery: re-sends a previously published observation
-        to a subscriber who missed it, without incrementing any sequence
-        counters.  Only sends if the subscriber's last_paid_seq covers the
-        observation's seq_num.
-
-        Returns the Nostr event ID on success, or None if not sent.
-        """
-        if not self._running or not self._client:
-            raise RuntimeError("Client not running")
-
-        stream_name = observation.stream_name
-        seq_num = observation.seq_num
-
-        sub_state = self._subscribers.get(stream_name, {}).get(subscriber_pubkey)
-        if sub_state is None:
-            return None
-
-        paid = (sub_state.last_paid_seq is not None
-                and sub_state.last_paid_seq >= seq_num)
-        free = sub_state.last_paid_seq is None
-        if not (paid or free):
-            return None
-
-        try:
-            recipient_pubkey = PublicKey.parse(subscriber_pubkey)
-            value_str = str(observation.value)
-            encrypted_value = encrypt_observation(
-                value_str, recipient_pubkey, self._keys)
-
+            # Paid stream: the public heartbeat, tags only, no value, so the
+            # relay always has a fresh created_at for marketplace freshness.
             tags = [
                 Tag.parse(["d", stream_name]),
-                Tag.parse(["p", subscriber_pubkey]),
                 Tag.parse(["stream", stream_name]),
                 Tag.parse(["seq", str(seq_num)]),
                 Tag.parse(["timestamp", str(observation.timestamp)]),
-                Tag.parse(["satori", "observation"]),
+                Tag.parse(["satori", "heartbeat"]),
             ]
-
-            builder = EventBuilder(
-                Kind(KIND_DATASTREAM_DATA),
-                encrypted_value,
-            ).tags(tags)
-
+            builder = EventBuilder(Kind(KIND_DATASTREAM_DATA), "").tags(tags)
             output = await self._send_builder(builder)
-            self._stats["observations_sent"] += 1
-            return output.id().to_hex()
-        except Exception as e:
-            print(f"Error resending to {subscriber_pubkey}: {e}")
+            event_ids.append(output.id().to_hex())
+
+        return event_ids
+
+    async def deliver_observation(
+        self,
+        observation: DatastreamObservation,
+        subscriber_pubkey: str,
+    ) -> str | None:
+        """Deliver a paid stream's observation to one buyer (provider).
+
+        One 34601 per buyer: d=<stream>:<buyer> (a relay keeps one event per
+        d, so a shared d would leave only one buyer's), p=buyer, seq and
+        timestamp in tags, and the value NIP-04 encrypted to the buyer.
+
+        Returns the event ID when a relay took it, else None.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        stream_name = observation.stream_name
+        encrypted_value = encrypt_observation(
+            str(observation.value), PublicKey.parse(subscriber_pubkey),
+            self._keys)
+        tags = [
+            Tag.parse(["d", f"{stream_name}:{subscriber_pubkey}"]),
+            Tag.parse(["p", subscriber_pubkey]),
+            Tag.parse(["stream", stream_name]),
+            Tag.parse(["seq", str(observation.seq_num)]),
+            Tag.parse(["timestamp", str(observation.timestamp)]),
+            Tag.parse(["satori", "observation"]),
+        ]
+        builder = EventBuilder(
+            Kind(KIND_DATASTREAM_DATA), encrypted_value).tags(tags)
+        signed = self._keys.sign_event(
+            builder.finalize_unsigned(self._keys.public_key()))
+        output = await self._client.send_event(signed)
+        if not output.success:
             return None
-
-    def get_subscribers(self, stream_name: str) -> list[str]:
-        """Get list of subscriber pubkeys for a stream (provider).
-
-        Args:
-            stream_name: Stream identifier
-
-        Returns:
-            List of subscriber public keys (hex)
-        """
-        stream_subscribers = self._subscribers.get(stream_name, {})
-        return list(stream_subscribers.keys())
-
-    def record_subscription(
-        self,
-        stream_name: str,
-        subscriber_pubkey: str,
-        payment_channel: str | None = None
-    ) -> None:
-        """Record a new subscriber (provider).
-
-        Called when a subscription announcement is received.
-
-        Args:
-            stream_name: Stream identifier
-            subscriber_pubkey: Subscriber's public key (hex)
-            payment_channel: Optional payment channel info
-        """
-        if stream_name not in self._subscribers:
-            self._subscribers[stream_name] = {}
-
-        existing = self._subscribers[stream_name].get(subscriber_pubkey)
-        self._subscribers[stream_name][subscriber_pubkey] = SubscriberState(
-            subscriber_pubkey=subscriber_pubkey,
-            stream_name=stream_name,
-            # Preserve last_paid_seq so re-subscriptions (e.g. on reconnect)
-            # don't revoke access the subscriber has already paid for.
-            last_paid_seq=existing.last_paid_seq if existing else None,
-            payment_channel=payment_channel,
-            subscribed_at=existing.subscribed_at if existing else int(time.time()),
-        )
-
-    def record_payment(
-        self,
-        stream_name: str,
-        subscriber_pubkey: str,
-        seq_num: int
-    ) -> None:
-        """Record a payment from a subscriber (provider).
-
-        Updates the subscriber's last_paid_seq to grant access to observations.
-
-        Args:
-            stream_name: Stream identifier
-            subscriber_pubkey: Subscriber's public key (hex)
-            seq_num: Observation sequence number they paid for
-        """
-        if stream_name in self._subscribers:
-            if subscriber_pubkey in self._subscribers[stream_name]:
-                sub_state = self._subscribers[stream_name][subscriber_pubkey]
-                # Update to highest paid seq
-                if sub_state.last_paid_seq is None or seq_num > sub_state.last_paid_seq:
-                    sub_state.last_paid_seq = seq_num
+        self._stats["observations_sent"] += 1
+        return signed.id().to_hex()
 
     # ========================================================================
     # SUBSCRIBER APIs
@@ -1103,7 +949,7 @@ class SatoriNostr:
         self,
         stream_name: str,
         provider_pubkey: str,
-        payment_channel: str | None = None
+        payment_channel: dict | None = None
     ) -> str:
         """Subscribe to a datastream (subscriber).
 
@@ -1112,7 +958,8 @@ class SatoriNostr:
         Args:
             stream_name: Stream identifier to subscribe to
             provider_pubkey: Provider's public key (hex)
-            payment_channel: Optional payment channel info
+            payment_channel: A paid stream's channel on Base:
+                {chain, contract, id, binding}
 
         Returns:
             Event ID of the subscription announcement
@@ -1219,7 +1066,7 @@ class SatoriNostr:
         stream_name: str,
         seq_num: int,
         amount_sats: int,
-        tx_id: str | None = None
+        voucher: dict | None = None
     ) -> str:
         """Send payment notification to provider (subscriber).
 
@@ -1229,8 +1076,9 @@ class SatoriNostr:
             provider_pubkey: Provider's public key (hex)
             stream_name: Stream identifier
             seq_num: Observation sequence number being paid for
-            amount_sats: Payment amount in satoshis
-            tx_id: Optional transaction/payment proof
+            amount_sats: Payment amount in satoshis (the price)
+            voucher: The identity's cumulative voucher on the channel:
+                {channel, cumulative (wei, decimal string), signature}
 
         Returns:
             Event ID of the payment notification
@@ -1249,7 +1097,7 @@ class SatoriNostr:
             seq_num=seq_num,
             amount_sats=amount_sats,
             timestamp=int(time.time()),
-            tx_id=tx_id,
+            voucher=voucher,
         )
 
         # Encrypt for provider
@@ -1554,6 +1402,26 @@ class SatoriNostr:
             except asyncio.TimeoutError:
                 continue
 
+    async def subscriptions(self) -> AsyncIterator[InboundSubscription]:
+        """Receive subscriptions and unsubscriptions to our streams (provider).
+
+        Yields:
+            InboundSubscription instances as they arrive
+
+        Raises:
+            RuntimeError: If client not running
+        """
+        if not self._running:
+            raise RuntimeError("Client not running")
+
+        while self._running:
+            try:
+                sub = await asyncio.wait_for(
+                    self._subscription_queue.get(), timeout=1.0)
+                yield sub
+            except asyncio.TimeoutError:
+                continue
+
     # ========================================================================
     # UTILITY APIs
     # ========================================================================
@@ -1655,30 +1523,6 @@ class SatoriNostr:
             - subscriptions_announced: Number of subscriptions announced
         """
         return self._stats.copy()
-
-    def get_subscriber_info(self, stream_name: str, subscriber_pubkey: str) -> SubscriberState | None:
-        """Get information about a specific subscriber (provider).
-
-        Args:
-            stream_name: Stream identifier
-            subscriber_pubkey: Subscriber's public key (hex)
-
-        Returns:
-            SubscriberState if subscriber exists, None otherwise
-        """
-        stream_subs = self._subscribers.get(stream_name, {})
-        return stream_subs.get(subscriber_pubkey)
-
-    def get_all_subscribers_info(self, stream_name: str) -> dict[str, SubscriberState]:
-        """Get information about all subscribers to a stream (provider).
-
-        Args:
-            stream_name: Stream identifier
-
-        Returns:
-            Dictionary mapping subscriber pubkeys to their SubscriberState
-        """
-        return self._subscribers.get(stream_name, {}).copy()
 
     # ========================================================================
     # INTERNAL - Event Processing
@@ -1826,6 +1670,7 @@ class SatoriNostr:
                     tag_map[vec[0]] = vec[1]
 
             # Try plaintext JSON first (free stream)
+            paid = False
             try:
                 observation = DatastreamObservation.from_json(content)
             except Exception:
@@ -1848,12 +1693,14 @@ class SatoriNostr:
                     value=value_str,
                     seq_num=seq_num,
                 )
+                paid = p_tag == self._keys.public_key().to_hex()
 
             inbound = InboundObservation(
                 stream_name=observation.stream_name,
                 nostr_pubkey=sender_pubkey.to_hex(),
                 observation=observation,
                 event_id=event.id().to_hex(),
+                paid=paid,
             )
 
             await self._observation_queue.put(inbound)
@@ -1873,13 +1720,9 @@ class SatoriNostr:
 
             payment_json = decrypt_payment(encrypted_content, sender_pubkey, self._keys)
             payment = PaymentNotification.from_json(payment_json)
-
-            # Record payment in subscriber state
-            self.record_payment(
-                payment.stream_name,
-                payment.from_pubkey,
-                payment.seq_num
-            )
+            # Only the payer itself can say it paid.
+            if payment.from_pubkey != sender_pubkey.to_hex():
+                return
 
             # Create inbound payment
             inbound = InboundPayment(
@@ -1920,8 +1763,9 @@ class SatoriNostr:
     async def _handle_subscription_event(self, event: Event) -> None:
         """Handle a subscription announcement event (kind 34602).
 
-        Subscription events with an action=unsubscribe tag remove the
-        subscriber from the in-memory _subscribers dict (Fix G).
+        A (un)subscription to one of our streams, sent by the subscriber
+        itself, is queued for subscriptions(); an action=unsubscribe tag
+        marks an unsubscription.
         """
         try:
             # Check for unsubscribe action tag
@@ -1935,20 +1779,13 @@ class SatoriNostr:
             # Parse subscription (public content)
             sub = SubscriptionAnnouncement.from_json(event.content())
 
-            # If I'm the provider, handle subscribe or unsubscribe
-            if sub.nostr_pubkey == self.pubkey():
-                if action == 'unsubscribe':
-                    if (sub.stream_name in self._subscribers
-                            and sub.subscriber_pubkey
-                            in self._subscribers[sub.stream_name]):
-                        del self._subscribers[sub.stream_name][
-                            sub.subscriber_pubkey]
-                else:
-                    self.record_subscription(
-                        sub.stream_name,
-                        sub.subscriber_pubkey,
-                        sub.payment_channel
-                    )
+            if (sub.nostr_pubkey == self.pubkey()
+                    and sub.subscriber_pubkey == event.author().to_hex()):
+                await self._subscription_queue.put(InboundSubscription(
+                    subscription=sub,
+                    unsubscribe=action == 'unsubscribe',
+                    event_id=event.id().to_hex(),
+                ))
 
         except Exception as e:
             print(f"Error handling subscription event: {e}")

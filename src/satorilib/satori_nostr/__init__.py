@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from .client import SatoriNostr, SubscriberState
+from .client import SatoriNostr
 from .models import (
     DatastreamMetadata,
     DatastreamObservation,
@@ -10,6 +10,7 @@ from .models import (
     PaymentNotification,
     InboundObservation,
     InboundPayment,
+    InboundSubscription,
     AccessRequest,
     InboundAccessRequest,
     SatoriNostrConfig,
@@ -44,7 +45,6 @@ from . import integrations
 __all__ = [
     # Main Client
     "SatoriNostr",
-    "SubscriberState",
 
     # Models
     "DatastreamMetadata",
@@ -53,6 +53,7 @@ __all__ = [
     "PaymentNotification",
     "InboundObservation",
     "InboundPayment",
+    "InboundSubscription",
     "SatoriNostrConfig",
 
     # Access Request Models

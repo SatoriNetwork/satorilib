@@ -134,7 +134,7 @@ class TestPaymentEncryption:
             "seq_num": 42,
             "amount_sats": 100,
             "timestamp": 1700000000,
-            "tx_id": None,
+            "voucher": None,
         })
         encrypted = encrypt_payment(
             pay_json, recipient_keys.public_key(), sender_keys)
@@ -154,3 +154,38 @@ class TestEncryptionError:
     def test_message(self):
         e = EncryptionError("test error")
         assert str(e) == "test error"
+
+
+# =========================================================================
+# NIP-04 as the browser neuron has it (its fixture: nostr-sdk 0.45's own output)
+# =========================================================================
+
+class TestNip04BrowserVectors:
+    """The browser neuron decrypts what this module encrypts and the other
+    way round: fixtures/nip04-vectors.json is the browser's own fixture."""
+
+    VEC = json.loads((__import__('pathlib').Path(__file__).parent / 'fixtures' / 'nip04-vectors.json').read_text())
+
+    def keys(self):
+        from nostr_sdk import Keys, SecretKey
+        return (Keys(SecretKey.parse(self.VEC['sender'])), Keys(SecretKey.parse(self.VEC['recipient'])))
+
+    def test_the_vectors_keys(self):
+        sender, recipient = self.keys()
+        assert sender.public_key().to_hex() == self.VEC['sender_pubkey']
+        assert recipient.public_key().to_hex() == self.VEC['recipient_pubkey']
+
+    @pytest.mark.parametrize('i', range(3))
+    def test_decrypts_the_vectors_both_ways(self, i):
+        sender, recipient = self.keys()
+        v = self.VEC['vectors'][i]
+        assert decrypt_json(v['ciphertext'], sender.public_key(), recipient) == v['text']
+        assert decrypt_json(v['ciphertext'], recipient.public_key(), sender) == v['text']
+
+    def test_its_ciphertext_has_the_vectors_shape(self):
+        import base64
+        sender, recipient = self.keys()
+        out = encrypt_json('101.25', recipient.public_key(), sender)
+        ct, iv = out.split('?iv=')
+        assert len(base64.b64decode(iv)) == 16 and len(base64.b64decode(ct)) % 16 == 0
+        assert decrypt_json(out, sender.public_key(), recipient) == '101.25'

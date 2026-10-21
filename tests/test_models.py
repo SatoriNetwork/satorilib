@@ -279,7 +279,7 @@ def make_payment(**overrides):
         seq_num=42,
         amount_sats=100,
         timestamp=1700000000,
-        tx_id=None,
+        voucher=None,
     )
     defaults.update(overrides)
     return PaymentNotification(**defaults)
@@ -290,19 +290,29 @@ class TestPaymentNotification:
         p = make_payment()
         assert p.amount_sats == 100
         assert p.seq_num == 42
-        assert p.tx_id is None
+        assert p.voucher is None
 
     def test_json_roundtrip(self):
-        p = make_payment(tx_id="lntx_abc123")
+        v = {"channel": "0x" + "ab" * 32, "cumulative": "10000000000000", "signature": "0x" + "cd" * 65}
+        p = make_payment(voucher=v)
         p2 = PaymentNotification.from_json(p.to_json())
         assert p2.amount_sats == p.amount_sats
-        assert p2.tx_id == "lntx_abc123"
+        assert p2.voucher == v
 
     def test_to_dict(self):
         p = make_payment()
         d = p.to_dict()
         assert d["amount_sats"] == 100
-        assert d["tx_id"] is None
+        assert d["voucher"] is None
+
+    def test_the_browsers_payment_json(self):
+        """The browser's paymentJson (src/nostr/satori.js): the same fields, voucher in place of tx_id."""
+        browser = {"from_pubkey": "bb" * 32, "to_pubkey": "aa" * 32, "stream_name": "walk_pred", "seq_num": 2,
+                   "amount_sats": 1000, "timestamp": 1792100060,
+                   "voucher": {"channel": "0x" + "ab" * 32, "cumulative": "10000000000000", "signature": "0x" + "cd" * 65}}
+        p = PaymentNotification.from_json(json.dumps(browser))
+        assert p.to_dict() == browser
+        assert list(p.to_dict()) == list(browser)
 
 
 # =========================================================================
