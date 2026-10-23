@@ -558,7 +558,6 @@ class Identity(IdentityBase):
         super().__init__()
         self.walletPath = walletPath
         self.password = password
-        self.alias = None
         self.challenges: dict[str, str] = {}
         self.load()
 
@@ -692,9 +691,6 @@ class Identity(IdentityBase):
             except Exception as _:
                 return content
         return content
-
-    def setAlias(self, alias: Union[str, None] = None) -> None:
-        self.alias = alias
 
     def challenge(self, identifier: Union[str, None] = None) -> str:
         self.challenges[identifier] = secrets.token_hex(32)

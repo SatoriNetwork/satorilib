@@ -538,24 +538,6 @@ class SatoriServerClient(object):
             endpoint=f'/simple/bridge/partial/broadcast/{network}/{feeSatsReserved}/{reportedFeeSats}/{walletId}',
             payload=tx)
 
-    def removeWalletAlias(self):
-        ''' removes the wallet alias from the server '''
-        return self._makeAuthenticatedCall(
-            function=requests.get,
-            endpoint='/remove_wallet_alias')
-
-    def updateWalletAlias(self, alias: str):
-        ''' removes the wallet alias from the server '''
-        return self._makeAuthenticatedCall(
-            function=requests.get,
-            endpoint='/update_wallet_alias/' + alias)
-
-    def getWalletAlias(self):
-        ''' removes the wallet alias from the server '''
-        return self._makeAuthenticatedCall(
-            function=requests.get,
-            endpoint='/get_wallet_alias').text
-
     def getManifestVote(self, wallet: Wallet = None):
         return self._makeUnauthenticatedCall(
             function=requests.get,

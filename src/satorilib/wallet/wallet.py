@@ -113,9 +113,6 @@ class WalletBase:
         """Forward identity validation"""
         return self.identity.validateIdentity()
 
-    def setAlias(self, alias: Union[str, None] = None) -> None:
-        self.identity.setAlias(alias)
-
     def authPayload(self, asDict: bool = False, challenge: str = None) -> Union[str, dict]:
         return self.identity.authPayload(asDict=asDict, challenge=challenge)
 
@@ -181,7 +178,6 @@ class Wallet(WalletBase):
         self.reserveAmount = reserve
         self.reserve = TxUtils.asSats(reserve)
         self.stats = {}
-        self.alias = None
         self.banner = None
         self.currency: Balance = Balance.empty('EVR')
         self.balance: Balance = Balance.empty('SATORIEVR')
