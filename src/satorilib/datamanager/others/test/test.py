@@ -5,17 +5,17 @@ from satoriengine.veda.engine import Engine
 from satorineuron import config
 import pandas as pd
 
-walletPath = config.walletPath('wallet.yaml')
+aliasPath = config.aliasPath()
 uuid = "23dc3133-5b3a-5b27-803e-70a07cf3c4f7"
 
 async def serverStartUp():
-    dataServer = DataServer(host='0.0.0.0', identity=EvrmoreIdentity(walletPath))
+    dataServer = DataServer(host='0.0.0.0', identity=EvrmoreIdentity(aliasPath))
     await dataServer.startServer()
     await asyncio.sleep(1)
 
 async def authenticate():
     await serverStartUp()
-    dataClient = DataClient('0.0.0.0', EvrmoreIdentity(walletPath))
+    dataClient = DataClient('0.0.0.0', EvrmoreIdentity(aliasPath))
     response: Message = await dataClient.authenticate(isClient='neuron')
     print(response.to_dict())
     # if response.status == DataServerApi.statusSuccess.value:

@@ -6,8 +6,8 @@ from satorilib.wallet.evrmore.identity import EvrmoreIdentity
 from satorineuron import config
 
 async def main():
-    walletPath = config.walletPath('wallet.yaml')
-    client = DataClient("0.0.0.0", identity=EvrmoreIdentity(walletPath))
+    aliasPath = config.aliasPath()
+    client = DataClient("0.0.0.0", identity=EvrmoreIdentity(aliasPath))
     df = pd.DataFrame({
         'value': [969.717144],
         # 'provider': 'krishna'

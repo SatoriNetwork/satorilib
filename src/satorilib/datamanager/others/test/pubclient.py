@@ -13,9 +13,9 @@ async def main():
     #     'provider': 'krishna'
     # }, index=['2025-05-13 06:57:01.115730'])
 
-    walletPath = config.walletPath('wallet.yaml')
-    # dataClient = DataClient('188.166.4.120', identity=EvrmoreIdentity(walletPath))
-    dataClient = DataClient('0.0.0.0', identity=EvrmoreIdentity(walletPath))
+    aliasPath = config.aliasPath()
+    # dataClient = DataClient('188.166.4.120', identity=EvrmoreIdentity(aliasPath))
+    dataClient = DataClient('0.0.0.0', identity=EvrmoreIdentity(aliasPath))
     # await dataClient.addActiveStream('009bb819-b737-55f5-b4d7-d851316eceae')
     # response = await dataClient.send(
     #                 peerAddr=('0.0.0.0', 24604), 
