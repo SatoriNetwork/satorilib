@@ -96,12 +96,12 @@ def test_the_transfer_lock_in_plain_words():
     assert transfer_lock(0, 20747) == {'locked': False, 'indefinite': False, 'until_round': None, 'free_at': None}
     assert lock_error(transfer_lock(20746, 20747)) is None  # ended
     staked = lock_error(transfer_lock(2 ** 24 - 1, 20747))
-    assert str(staked) == ("Your vault is staked with this neuron, so it can't send SATORI: "
-                           "a channel needs SATORI the vault can send.")
+    assert str(staked) == ("Your wallet is staked with this neuron, so it can't send SATORI: "
+                           "a channel needs SATORI the wallet can send.")
     assert staked.reason == 'Locked'
     after = lock_error(transfer_lock(20747, 20747))
-    assert str(after) == ("Your vault's SATORI can't be sent until Oct 22, 00:00 UTC (round 20748): "
-                          "a channel needs SATORI the vault can send.")
+    assert str(after) == ("Your wallet's SATORI can't be sent until Oct 22, 00:00 UTC (round 20748): "
+                          "a channel needs SATORI the wallet can send.")
 
 
 def test_contract_errors_in_plain_words():
@@ -116,9 +116,9 @@ def test_contract_errors_in_plain_words():
         return Custom('0x' + keccak(text=sig)[:4].hex() + args)
 
     assert channel_error_text(err('CloseNotReady()')) == "The 7-day grace period after the close request hasn't ended yet."
-    assert channel_error_text(err('Locked()')) == ("The vault's SATORI can't be sent now: it is staked, "
+    assert channel_error_text(err('Locked()')) == ("The wallet's SATORI can't be sent now: it is staked, "
                                                    "or it predicted by hand this round or the last.")
-    assert channel_error_text(err('ERC20InsufficientBalance(address,uint256,uint256)', '00' * 96)) == 'Not enough SATORI in the vault.'
+    assert channel_error_text(err('ERC20InsufficientBalance(address,uint256,uint256)', '00' * 96)) == 'Not enough SATORI in the wallet.'
     assert channel_error_text(err('HookFailedWithoutReason()')) == 'The transaction ran out of gas; try again.'
     assert channel_error_text(ChannelError('as it is')) == 'as it is'
     assert channel_error_text(RuntimeError('something else')) == 'something else'
@@ -215,11 +215,11 @@ def test_read_channel():
     assert chans.read_channel(CH) is None
 
 
-def test_a_staked_vault_is_refused_before_anything_is_signed_or_sent():
+def test_a_staked_wallet_is_refused_before_anything_is_signed_or_sent():
     client = _Client(_Contract({}))
     chans = PaymentChannels(client, CHAIN, token='0x' + '4' * 40)
-    chans._lock_state = lambda vault: (2 ** 24 - 1, 20747)
+    chans._lock_state = lambda wallet: (2 ** 24 - 1, 20747)
     chans._permit = lambda *a: pytest.fail('signed a permit')
-    with pytest.raises(ChannelError, match="Your vault is staked with this neuron, so it can't send SATORI"):
+    with pytest.raises(ChannelError, match="Your wallet is staked with this neuron, so it can't send SATORI"):
         chans.open_channel(KEY, SIGNER, '0x' + '2' * 40, 100)
     assert client.sent == []

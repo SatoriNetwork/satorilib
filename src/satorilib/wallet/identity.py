@@ -621,7 +621,7 @@ class Identity(IdentityBase):
         self.yaml = self.decryptWallet(self.yaml)
         self.loadFromYaml(self.yaml)
         if self.isDecrypted and not super().validateIdentity():
-            raise Exception('wallet or vault file corrupt')
+            raise Exception('key file corrupt')
         return True
 
     def save(self, path: Union[str, None] = None) -> bool:

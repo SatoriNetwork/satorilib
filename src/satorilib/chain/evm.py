@@ -66,7 +66,7 @@ class EvmClient:
         hash. Provide either a contract function `fn` (its target/calldata come
         from it) OR a raw (`to`, `data`) pair. Signs with `private_key` or the
         client's key. `gas_pad` is added to the gas estimate: a SATORI payment
-        into a staked vault runs the token's hook, which a bare estimate can
+        into a staked wallet runs the token's hook, which a bare estimate can
         starve. Raises on missing key or on-chain revert."""
         key = private_key or self._private_key
         if not key:

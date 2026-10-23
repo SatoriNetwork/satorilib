@@ -478,7 +478,7 @@ class SatoriNostr:
         host_pubkey: str,
         seq_num: int,
         predicted_value: float,
-        predictor_wallet_pubkey: str,
+        predictor_alias_pubkey: str,
     ) -> str:
         """Submit a prediction to a bounty host (predictor).
 
@@ -491,7 +491,7 @@ class SatoriNostr:
             host_pubkey: Bounty host's Nostr pubkey
             seq_num: Observation sequence number being predicted
             predicted_value: The predictor's prediction
-            predictor_wallet_pubkey: Predictor's EVRmore wallet pubkey, so the
+            predictor_alias_pubkey: The predictor's alias pubkey, so the
                 host can open a payment channel and pay them
 
         Returns:
@@ -507,7 +507,7 @@ class SatoriNostr:
             stream_name=stream_name,
             stream_provider_pubkey=stream_provider_pubkey,
             predictor_pubkey=self.pubkey(),
-            predictor_wallet_pubkey=predictor_wallet_pubkey,
+            predictor_alias_pubkey=predictor_alias_pubkey,
             seq_num=seq_num,
             predicted_value=predicted_value,
             timestamp=int(time.time()),
@@ -1077,7 +1077,7 @@ class SatoriNostr:
             stream_name: Stream identifier
             seq_num: Observation sequence number being paid for
             amount_sats: Payment amount in satoshis (the price)
-            voucher: The identity's cumulative voucher on the channel:
+            voucher: The alias's cumulative voucher on the channel:
                 {channel, cumulative (wei, decimal string), signature}
 
         Returns:
@@ -1141,7 +1141,7 @@ class SatoriNostr:
         so the relay keeps only the latest commitment per channel. Tagged with the
         receiver's Nostr pubkey so Nostr pushes it to them immediately.
 
-        Note: `commitment.receiver_pubkey` is the 33-byte EVR wallet pubkey used
+        Note: `commitment.receiver_pubkey` is the 33-byte alias pubkey used
         to build the partial transaction; the Nostr `p` tag must be a 32-byte
         x-only Nostr pubkey, which is a separate value and must be passed in.
 
@@ -1258,7 +1258,7 @@ class SatoriNostr:
         can save the channel to their DB and process future commitments.
 
         Args:
-            channel_open: Channel metadata (EVR wallet pubkeys, redeem script, etc.)
+            channel_open: Channel metadata (alias pubkeys, redeem script, etc.)
             receiver_nostr_pubkey: Receiver's Nostr pubkey (hex) for push routing
 
         Returns:
@@ -1820,7 +1820,7 @@ class SatoriNostr:
         looking up the channel row by p2sh_address, which inherently proves
         ownership.
 
-        The payload's `receiver_pubkey` is a 33-byte EVR wallet pubkey and
+        The payload's `receiver_pubkey` is a 33-byte alias pubkey and
         cannot be compared to `self.pubkey()` (a 32-byte Nostr pubkey), so the
         payload itself cannot be used to filter at this layer. The event *tag*
         `p`, however, is set by publish_commitment() to the receiver's Nostr
@@ -1872,7 +1872,7 @@ class SatoriNostr:
         """Handle a channel open announcement event (kind 34605).
 
         Queues all valid open announcements. The consumer (_channelHandleOpen
-        in start.py) filters to those addressed to this node's EVR wallet pubkey.
+        in start.py) filters to those addressed to this node's alias pubkey.
         """
         try:
             content = event.content()

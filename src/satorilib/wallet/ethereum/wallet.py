@@ -14,8 +14,8 @@ class EthereumWallet():
     (and as a stretch goal, a pubkey for signing and verifying messages) so that
     we can inform the server of what address to associate with the user's
     account so that when we wrap tokens for them we can send the wrapped tokens
-    to the right address. we should also key this off the vault rather than the
-    wallet. alternatively we could just ask the user to provide an address...
+    to the right address. we should also key this off the wallet rather than the
+    alias. alternatively we could just ask the user to provide an address...
     If they're wrapping tokens to trade they'll probably know how to use
     metamask already...
     '''
@@ -26,10 +26,10 @@ class EthereumWallet():
 
     def __init__(
         self,
-        vaultPath: str,
+        walletPath: str,
         password: Union[str, None] = None,
     ):
-        self.vaultPath = vaultPath
+        self.walletPath = walletPath
         self.password = password
         self._entropy = None
         self.account = None
@@ -76,7 +76,7 @@ class EthereumWallet():
         return encrypted
 
     def getRaw(self):
-        return WalletApi.load(walletPath=self.vaultPath)
+        return WalletApi.load(walletPath=self.walletPath)
 
     def loadRaw(self):
         self.yaml = self.getRaw()

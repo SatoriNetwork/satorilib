@@ -26,7 +26,7 @@ class DatastreamMetadata:
     cadence_seconds: int | None  # Expected seconds between observations (None = irregular)
     tags: list[str]          # Searchable tags (e.g., ["bitcoin", "price", "usd"])
     approval_required: bool = False  # If True, subscribers must request and receive approval before receiving data
-    metadata: dict[str, Any] | None = None  # Optional: source info, lineage, wallet pubkey, etc.
+    metadata: dict[str, Any] | None = None  # Optional: source info, lineage, alias pubkey, etc.
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -156,7 +156,7 @@ class SubscriptionAnnouncement:
     nostr_pubkey: str        # Who provides the stream (hex)
     timestamp: int           # When subscription started (Unix timestamp)
     # A paid stream's channel on Base: {chain, contract, id, binding}, binding =
-    # the buyer identity's EIP-191 signature of satori-market:v1:<id>:<buyer's Nostr pubkey>
+    # the buyer alias's EIP-191 signature of satori-market:v1:<id>:<buyer's Nostr pubkey>
     payment_channel: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -192,7 +192,7 @@ class PaymentNotification:
     seq_num: int             # Which observation this payment covers
     amount_sats: int         # Payment amount in satoshis (10^-8 SATORI): the price
     timestamp: int           # When payment was sent (Unix timestamp)
-    # The buyer identity's cumulative EIP-712 voucher on the channel:
+    # The buyer alias's cumulative EIP-712 voucher on the channel:
     # {channel, cumulative (wei, decimal string), signature}
     voucher: dict | None = None
 
@@ -316,8 +316,8 @@ class ChannelOpen:
     The receiver saves this to their DB so they can process future commitments.
     """
     p2sh_address: str       # Channel identifier
-    sender_pubkey: str      # Sender's EVR wallet pubkey (hex)
-    receiver_pubkey: str    # Receiver's EVR wallet pubkey (hex)
+    sender_pubkey: str      # Sender's alias pubkey (hex)
+    receiver_pubkey: str    # Receiver's alias pubkey (hex)
     redeem_script: str      # Hex-encoded P2SH redeem script
     funding_txid: str       # Funding transaction ID
     funding_vout: int       # Funding output index
@@ -442,6 +442,17 @@ class BountyAnnouncement:
         return cls.from_dict(json.loads(json_str))
 
 
+def predictorAliasPubkey(content: dict[str, Any]) -> str | None:
+    """The predictor's alias pubkey from a prediction submission's content.
+
+    The current form names it predictor_alias_pubkey; an older neuron's
+    submission names it predictor_wallet_pubkey (the same key).
+    """
+    if content.get('predictor_alias_pubkey'):
+        return content['predictor_alias_pubkey']
+    return content.get('predictor_wallet_pubkey')
+
+
 @dataclass
 class PredictionSubmission:
     """A prediction sent from a predictor to a bounty host.
@@ -455,7 +466,7 @@ class PredictionSubmission:
     stream_name: str
     stream_provider_pubkey: str
     predictor_pubkey: str
-    predictor_wallet_pubkey: str
+    predictor_alias_pubkey: str
     seq_num: int
     predicted_value: float
     timestamp: int
@@ -468,7 +479,10 @@ class PredictionSubmission:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> 'PredictionSubmission':
-        return cls(**data)
+        known = {f.name for f in fields(cls)}
+        values = {k: v for k, v in data.items() if k in known}
+        values['predictor_alias_pubkey'] = predictorAliasPubkey(data)
+        return cls(**values)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())

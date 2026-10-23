@@ -119,10 +119,10 @@ class WalletBase:
     def authPayload(self, asDict: bool = False, challenge: str = None) -> Union[str, dict]:
         return self.identity.authPayload(asDict=asDict, challenge=challenge)
 
-    def saveAsVault(self, password: str, vaultPath: str = None) -> None:
-        vaultPath = vaultPath or self.walletPath.replace('wallet-', 'vault-')
+    def saveEncrypted(self, password: str, path: str) -> None:
+        ''' save this key at path, encrypted with password '''
         self.identity.password = password
-        self.identity.save(path=vaultPath)
+        self.identity.save(path=path)
 
 
 class Wallet(WalletBase):
@@ -830,12 +830,12 @@ class Wallet(WalletBase):
         self,
         asDict: bool = False,
         challenge: str = None,
-        vaultInfo:dict = None,
+        walletInfo: dict = None,
     ) -> Union[str, dict]:
         payload = {
             **self.identity.authPayload(asDict=True, challenge=challenge),
-            **system.devicePayload(asDict=True), 
-            **(vaultInfo or {})}
+            **system.devicePayload(asDict=True),
+            **(walletInfo or {})}
         if asDict:
             return payload
         return json.dumps(payload)

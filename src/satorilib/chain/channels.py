@@ -3,16 +3,16 @@ market uses it, the same as the browser neuron (Satori/satori
 src/chain/channels.js; the contract's rules: Satori/contract
 docs/design/payment-channels.md).
 
-The vault funds a channel (`open_channel`, with SATORI's permit); the identity
+The wallet funds a channel (`open_channel`, with SATORI's permit); the alias
 signs its vouchers and the binding, asks to close and withdraws (the refund
-goes to the vault, the payer); a seller's identity settles into the seller's
-vault (`settle_many`). Amounts are int wei; keys are 0x private keys.
+goes to the wallet, the payer); a seller's alias settles into the seller's
+wallet (`settle_many`). Amounts are int wei; keys are 0x private keys.
 
     chans = PaymentChannels(EvmClient(rpc), chain_id, token)
-    chans.open_channel(vault_key, identity_address, payee, deposit) → {id, hash, permit}
-    sign_voucher(identity_key, chain_id, channel_id, cumulative) / verify_voucher(signer, sig, …)
-    chans.settle_many(identity_key, [{id, cumulative, signature}]) → {hash, settled, skipped}
-    chans.request_close(identity_key, id) … CLOSE_GRACE_S … chans.withdraw(identity_key, id)
+    chans.open_channel(wallet_key, alias_address, payee, deposit) → {id, hash, permit}
+    sign_voucher(alias_key, chain_id, channel_id, cumulative) / verify_voucher(signer, sig, …)
+    chans.settle_many(alias_key, [{id, cumulative, signature}]) → {hash, settled, skipped}
+    chans.request_close(alias_key, id) … CLOSE_GRACE_S … chans.withdraw(alias_key, id)
 """
 import os
 import time
@@ -27,7 +27,7 @@ from eth_utils import keccak, to_checksum_address
 ADDRESS = '0xeF3f87042cd9619729E5D69Da2fF90F89EA6976c'
 CLOSE_GRACE_S = 7 * 86400  # CLOSE_GRACE_PERIOD: requestClose → withdraw
 MAX_AMOUNT = 2 ** 96 - 1  # amounts are uint96 wei
-# Gas over the estimate: a payment into a staked vault runs the token's delegation
+# Gas over the estimate: a payment into a staked wallet runs the token's delegation
 # hook, and a starved hook is skipped silently on D6 (the contract doc). settleMany
 # adds PAYMENT_GAS per payment (measured: ~100,000 the first time, 70,000 after).
 HOOK_GAS = 500_000
@@ -99,16 +99,16 @@ PLAIN = {
     'UnknownChannel': 'There is no such channel.',
     'ChannelClosed': 'The channel is closed.',
     'NotPayee': "Only the seller (the channel's payee) can do that.",
-    'NotPayer': 'Only the vault that funded the channel can do that.',
-    'NotPayerOrSigner': "Only the channel's vault or identity can do that.",
+    'NotPayer': 'Only the wallet that funded the channel can do that.',
+    'NotPayerOrSigner': "Only the channel's wallet or alias can do that.",
     'BadSignature': "The voucher's signature isn't the channel's signer's.",
     'NothingToSettle': 'Nothing new to settle: the voucher pays no more than is already paid.',
     'CloseNotRequested': 'No close was asked for this channel.',
     'CloseNotReady': "The 7-day grace period after the close request hasn't ended yet.",
     'UnsupportedToken': "The token takes a fee on transfer, which channels can't hold.",
     'SafeERC20FailedOperation': 'The token refused the transfer.',
-    'Locked': "The vault's SATORI can't be sent now: it is staked, or it predicted by hand this round or the last.",
-    'ERC20InsufficientBalance': 'Not enough SATORI in the vault.',
+    'Locked': "The wallet's SATORI can't be sent now: it is staked, or it predicted by hand this round or the last.",
+    'ERC20InsufficientBalance': 'Not enough SATORI in the wallet.',
     'ERC20InsufficientAllowance': "The channel contract wasn't allowed to take the deposit.",
     'HookFailedWithoutReason': 'The transaction ran out of gas; try again.',
 }
@@ -201,7 +201,7 @@ def voucher_digest(chain_id, channel_id, cumulative, contract=ADDRESS) -> str:
 
 
 def sign_voucher(private_key, chain_id, channel_id, cumulative, contract=ADDRESS) -> str:
-    """A voucher signed by the identity's key: 65 bytes, 0x hex. No gas."""
+    """A voucher signed by the alias's key: 65 bytes, 0x hex. No gas."""
     signed = Account.sign_message(
         encode_typed_data(full_message=voucher_typed_data(chain_id, channel_id, cumulative, contract)), private_key)
     return _hex(signed.signature)
@@ -243,12 +243,12 @@ def due_of(deposit, settled, cumulative) -> int:
 
 
 def binding_text(channel_id, nostr_pubkey) -> str:
-    """What the identity signs to say this Nostr key may use the channel (EIP-191)."""
+    """What the alias signs to say this Nostr key may use the channel (EIP-191)."""
     return f'satori-market:v1:{str(channel_id).lower()}:{nostr_pubkey}'
 
 
 def sign_binding(private_key, channel_id, nostr_pubkey) -> str:
-    """The identity's binding: its personal_sign of binding_text, 0x hex."""
+    """The alias's binding: its personal_sign of binding_text, 0x hex."""
     return _hex(Account.sign_message(encode_defunct(text=binding_text(channel_id, nostr_pubkey)), private_key).signature)
 
 
@@ -277,12 +277,12 @@ def _fmt_utc(s) -> str:
 
 
 def lock_error(lock):
-    """SATORI's transfer lock in plain words (a funded channel needs SATORI the vault can send), or None."""
+    """SATORI's transfer lock in plain words (a funded channel needs SATORI the wallet can send), or None."""
     if not lock['locked']:
         return None
-    why = ("Your vault is staked with this neuron, so it can't send SATORI" if lock['indefinite']
-           else f"Your vault's SATORI can't be sent until {_fmt_utc(lock['free_at'])} (round {lock['until_round'] + 1})")
-    return ChannelError(f'{why}: a channel needs SATORI the vault can send.', reason='Locked')
+    why = ("Your wallet is staked with this neuron, so it can't send SATORI" if lock['indefinite']
+           else f"Your wallet's SATORI can't be sent until {_fmt_utc(lock['free_at'])} (round {lock['until_round'] + 1})")
+    return ChannelError(f'{why}: a channel needs SATORI the wallet can send.', reason='Locked')
 
 
 class PaymentChannels:
@@ -317,13 +317,13 @@ class PaymentChannels:
                 'deposit': int(deposit), 'settled': int(settled), 'close_requested_at': asked or None,
                 'closed': bool(closed), 'grace_ends_at': asked + CLOSE_GRACE_S if asked else None}
 
-    def _lock_state(self, vault):
+    def _lock_state(self, wallet):
         t = self._erc20()
-        return (int(t.functions.transferLockedUntil(to_checksum_address(vault)).call()),
+        return (int(t.functions.transferLockedUntil(to_checksum_address(wallet)).call()),
                 int(t.functions.getCurrentRound().call()))
 
     def _permit(self, account, value):
-        """An ERC-2612 permit for `value` to the channel contract, signed by the vault; None when the token has
+        """An ERC-2612 permit for `value` to the channel contract, signed by the wallet; None when the token has
         none. The domain is ERC-5267's eip712Domain(), else name() and version "1", and only if it hashes to
         the token's DOMAIN_SEPARATOR()."""
         t = self._erc20()
@@ -383,14 +383,14 @@ class PaymentChannels:
             time.sleep(wait)
         return h
 
-    def open_channel(self, vault_key, identity_address, payee, deposit, salt=None) -> dict:
-        """The vault opens a channel to `payee` (the seller's vault) with `deposit` of SATORI: payer = the vault,
-        signer = the identity. SATORI's transfer lock first, before anything is signed; then one openWithPermit,
+    def open_channel(self, wallet_key, alias_address, payee, deposit, salt=None) -> dict:
+        """The wallet opens a channel to `payee` (the seller's wallet) with `deposit` of SATORI: payer = the wallet,
+        signer = the alias. SATORI's transfer lock first, before anything is signed; then one openWithPermit,
         or for a token without a permit approve, then open. → {id, hash, permit, approve?}"""
         try:
             _amount(deposit, 'The deposit', positive=True)
-            account = Account.from_key(vault_key)
-            payer, signer = account.address, to_checksum_address(identity_address)
+            account = Account.from_key(wallet_key)
+            payer, signer = account.address, to_checksum_address(alias_address)
             payee, token = to_checksum_address(payee), to_checksum_address(self.token)
             salt = salt or new_salt()
             cid = channel_id_of(payer, payee, token, signer, salt)
@@ -402,33 +402,33 @@ class PaymentChannels:
             if permit:
                 h = self.client.send(fns.openWithPermit(payer, payee, token, signer, deposit, _b32(salt), permit['deadline'],
                                                         permit['v'], permit['r'], permit['s']),
-                                     private_key=vault_key, gas_pad=HOOK_GAS)
+                                     private_key=wallet_key, gas_pad=HOOK_GAS)
                 return {'id': cid, 'hash': h, 'permit': True}
             approve = self._approve(account, deposit)
             h = self.client.send(fns.open(payer, payee, token, signer, deposit, _b32(salt)),
-                                 private_key=vault_key, gas_pad=HOOK_GAS)
+                                 private_key=wallet_key, gas_pad=HOOK_GAS)
             return {'id': cid, 'hash': h, 'permit': False, **({'approve': approve} if approve else {})}
         except Exception as e:
             raise _plain(e) from e
 
-    def request_close(self, identity_key, channel_id) -> str:
-        """The identity starts the 7-day grace period; asking again doesn't restart it."""
+    def request_close(self, alias_key, channel_id) -> str:
+        """The alias starts the 7-day grace period; asking again doesn't restart it."""
         try:
             return self.client.send(self.contract.functions.requestClose(_b32(channel_id)),
-                                    private_key=identity_key, gas_pad=HOOK_GAS)
+                                    private_key=alias_key, gas_pad=HOOK_GAS)
         except Exception as e:
             raise _plain(e) from e
 
-    def withdraw(self, identity_key, channel_id) -> str:
-        """After the grace period, the identity sends what was not settled back to the vault (the payer)."""
+    def withdraw(self, alias_key, channel_id) -> str:
+        """After the grace period, the alias sends what was not settled back to the wallet (the payer)."""
         try:
             return self.client.send(self.contract.functions.withdraw(_b32(channel_id)),
-                                    private_key=identity_key, gas_pad=HOOK_GAS)
+                                    private_key=alias_key, gas_pad=HOOK_GAS)
         except Exception as e:
             raise _plain(e) from e
 
-    def settle_many(self, identity_key, entries) -> dict:
-        """The seller's identity settles many vouchers in one transaction ([{id, cumulative, signature}]), only
+    def settle_many(self, alias_key, entries) -> dict:
+        """The seller's alias settles many vouchers in one transaction ([{id, cumulative, signature}]), only
         those that would pay: the rest come back in `skipped` ({id, reason: 'unknown' | 'closed' | 'nothing-due'
         | 'bad-signature'}); with none left nothing is sent. → {hash, settled: [{id, cumulative, paid, settled}], skipped}"""
         try:
@@ -450,7 +450,7 @@ class PaymentChannels:
             h = self.client.send(self.contract.functions.settleMany(
                 [_b32(e['id']) for e in keep], [e['cumulative'] for e in keep],
                 [bytes.fromhex(e['signature'][2:]) for e in keep]),
-                private_key=identity_key, gas_pad=HOOK_GAS + len(keep) * PAYMENT_GAS)
+                private_key=alias_key, gas_pad=HOOK_GAS + len(keep) * PAYMENT_GAS)
             return {'hash': h, 'settled': self._settled_of(h), 'skipped': skipped}
         except Exception as e:
             raise _plain(e) from e

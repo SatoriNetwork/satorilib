@@ -1,9 +1,9 @@
 """The paid-stream channel on a local anvil fork of Base Sepolia, against the
-deployed PaymentChannels and SATORI, with throwaway keys: the buyer's vault
-opens a channel (one openWithPermit), its identity signs vouchers, the
-seller's identity settles them with settleMany into the seller's vault, the
-buyer's identity asks to close and, after the 7-day grace period, withdraws
-the rest back to the vault.
+deployed PaymentChannels and SATORI, with throwaway keys: the buyer's wallet
+opens a channel (one openWithPermit), its alias signs vouchers, the
+seller's alias settles them with settleMany into the seller's wallet, the
+buyer's alias asks to close and, after the 7-day grace period, withdraws
+the rest back to the wallet.
 
 Never a public chain: runs only when SATORI_FORK_RPC names a local fork, e.g.
     node Satori/satori/scripts/fork.mjs start --port 8559
@@ -68,71 +68,71 @@ def test_open_voucher_settle_close_withdraw_on_the_fork(fork):
     from satorilib.chain.channels import (
         CLOSE_GRACE_S, ChannelError, PaymentChannels, sign_binding, binding_signer, sign_voucher, verify_voucher)
 
-    keys = {k: Account.create() for k in ('buyer_vault', 'buyer_id', 'seller_vault', 'seller_id')}
+    keys = {k: Account.create() for k in ('buyer_wallet', 'buyer_id', 'seller_wallet', 'seller_id')}
     for k, a in keys.items():
-        _fund(fork, a.address, satori=5 * SATORI if k == 'buyer_vault' else 0)
+        _fund(fork, a.address, satori=5 * SATORI if k == 'buyer_wallet' else 0)
     chans = PaymentChannels(fork, 84532, TOKEN)
     price = 10 ** 15  # 0.001 SATORI
     deposit = 100 * price
 
-    # the buyer's vault opens the channel: payer = vault, signer = identity, payee = the seller's vault
-    r = chans.open_channel(keys['buyer_vault'].key.to_0x_hex(), keys['buyer_id'].address,
-                           keys['seller_vault'].address, deposit)
+    # the buyer's wallet opens the channel: payer = wallet, signer = alias, payee = the seller's wallet
+    r = chans.open_channel(keys['buyer_wallet'].key.to_0x_hex(), keys['buyer_id'].address,
+                           keys['seller_wallet'].address, deposit)
     assert r['permit'] is True  # one transaction, with SATORI's permit
     ch = chans.read_channel(r['id'])
     assert (ch['payer'], ch['payee'], ch['signer'], ch['deposit'], ch['settled']) == (
-        keys['buyer_vault'].address, keys['seller_vault'].address, keys['buyer_id'].address, deposit, 0)
+        keys['buyer_wallet'].address, keys['seller_wallet'].address, keys['buyer_id'].address, deposit, 0)
     assert ch['token'].lower() == TOKEN.lower() and not ch['closed'] and ch['close_requested_at'] is None
     binding = sign_binding(keys['buyer_id'].key.to_0x_hex(), r['id'], '6' * 64)
     assert binding_signer(r['id'], '6' * 64, binding) == ch['signer']
 
-    # the identity signs a voucher per observation; the seller checks each against the channel's signer
+    # the alias signs a voucher per observation; the seller checks each against the channel's signer
     vouchers = [sign_voucher(keys['buyer_id'].key.to_0x_hex(), 84532, r['id'], n * price) for n in range(1, 4)]
     assert all(verify_voucher(ch['signer'], v, 84532, r['id'], (n + 1) * price) for n, v in enumerate(vouchers))
 
-    # the seller's identity settles the newest with settleMany, into the seller's vault
+    # the seller's alias settles the newest with settleMany, into the seller's wallet
     s = chans.settle_many(keys['seller_id'].key.to_0x_hex(), [{'id': r['id'], 'cumulative': 3 * price,
                                                                 'signature': vouchers[-1]}])
     assert s['skipped'] == [] and s['settled'] == [{'id': r['id'], 'cumulative': 3 * price, 'paid': 3 * price,
                                                     'settled': 3 * price}]
-    assert _balance(fork, keys['seller_vault'].address) == 3 * price
+    assert _balance(fork, keys['seller_wallet'].address) == 3 * price
     again = chans.settle_many(keys['seller_id'].key.to_0x_hex(), [{'id': r['id'], 'cumulative': 3 * price,
                                                                     'signature': vouchers[-1]}])
     assert again == {'hash': None, 'settled': [], 'skipped': [{'id': r['id'], 'reason': 'nothing-due'}]}
 
-    # the buyer's identity asks to close; withdraw is refused in plain words before the grace period
+    # the buyer's alias asks to close; withdraw is refused in plain words before the grace period
     chans.request_close(keys['buyer_id'].key.to_0x_hex(), r['id'])
     ch = chans.read_channel(r['id'])
     assert ch['close_requested_at'] and ch['grace_ends_at'] == ch['close_requested_at'] + CLOSE_GRACE_S
     with pytest.raises(ChannelError, match="The 7-day grace period after the close request hasn't ended yet."):
         chans.withdraw(keys['buyer_id'].key.to_0x_hex(), r['id'])
 
-    # 8 days on: the identity withdraws, the rest goes back to the vault (the payer)
+    # 8 days on: the alias withdraws, the rest goes back to the wallet (the payer)
     fork.w3.provider.make_request('evm_increaseTime', [8 * 86400])
     fork.w3.provider.make_request('evm_mine', [])
     chans.withdraw(keys['buyer_id'].key.to_0x_hex(), r['id'])
     assert chans.read_channel(r['id'])['closed'] is True
-    assert _balance(fork, keys['buyer_vault'].address) == 5 * SATORI - 3 * price
+    assert _balance(fork, keys['buyer_wallet'].address) == 5 * SATORI - 3 * price
 
 
 HUB = '0x1eec7E1443C1065ab78180A14326e5Ac8284f143'  # SatoriHub on Base Sepolia (Lite's base_config)
 
 
-def test_a_staked_vault_cant_fund_a_channel_said_in_plain_words(fork):
-    """A vault staked with its neuron (delegatePredictionPower to the identity): SATORI's transfer lock."""
+def test_a_staked_wallet_cant_fund_a_channel_said_in_plain_words(fork):
+    """A wallet staked with its neuron (delegatePredictionPower to the alias): SATORI's transfer lock."""
     from eth_account import Account
     from satorilib.chain.channels import HOOK_GAS, ChannelError, PaymentChannels
 
-    vault, identity = Account.create(), Account.create()
-    _fund(fork, vault.address, satori=SATORI)
+    wallet, alias = Account.create(), Account.create()
+    _fund(fork, wallet.address, satori=SATORI)
     hub = fork.contract(HUB, [{'name': 'delegatePredictionPower', 'type': 'function', 'stateMutability': 'nonpayable',
                                'inputs': [{'name': 'delegate', 'type': 'address'}], 'outputs': []}])
-    fork.send(hub.functions.delegatePredictionPower(identity.address), private_key=vault.key.to_0x_hex(),
+    fork.send(hub.functions.delegatePredictionPower(alias.address), private_key=wallet.key.to_0x_hex(),
               gas_pad=HOOK_GAS)
     chans = PaymentChannels(fork, 84532, TOKEN)
-    assert chans._lock_state(vault.address)[0] == 2 ** 24 - 1
-    before = fork.w3.eth.get_transaction_count(vault.address)
-    with pytest.raises(ChannelError, match="Your vault is staked with this neuron, so it can't send SATORI: "
-                                           "a channel needs SATORI the vault can send."):
-        chans.open_channel(vault.key.to_0x_hex(), identity.address, Account.create().address, 10 ** 15)
-    assert fork.w3.eth.get_transaction_count(vault.address) == before  # nothing sent
+    assert chans._lock_state(wallet.address)[0] == 2 ** 24 - 1
+    before = fork.w3.eth.get_transaction_count(wallet.address)
+    with pytest.raises(ChannelError, match="Your wallet is staked with this neuron, so it can't send SATORI: "
+                                           "a channel needs SATORI the wallet can send."):
+        chans.open_channel(wallet.key.to_0x_hex(), alias.address, Account.create().address, 10 ** 15)
+    assert fork.w3.eth.get_transaction_count(wallet.address) == before  # nothing sent
