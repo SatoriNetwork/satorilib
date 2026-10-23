@@ -40,12 +40,14 @@ import datetime as dt
 class SatoriServerClient(object):
     def __init__(
         self,
-        wallet: Wallet,
+        alias: Wallet,
         url: str = None,
         sendingUrl: str = None,
         *args, **kwargs
     ):
-        self.wallet = wallet
+        # the alias: the neuron's automated signing key, which it keeps
+        # unencrypted; it is who this client is to the Satori Network
+        self.alias = alias
         # Use central config for URL
         from satorilib.config import get_central_url
         default_url = get_central_url()
@@ -84,7 +86,7 @@ class SatoriServerClient(object):
         return str(time.time())
 
     def _login_with_jwt(self):
-        """Perform JWT login with an EIP-191 wallet signature."""
+        """Perform JWT login with an EIP-191 signature by the alias."""
         try:
             # Generate challenge (timestamp)
             challenge = str(time.time())
@@ -93,9 +95,9 @@ class SatoriServerClient(object):
             response = requests.post(
                 self.url + '/api/v1/auth/login',
                 headers={
-                    'wallet-pubkey': self.wallet.pubkey,
+                    'alias-pubkey': self.alias.pubkey,
                     'message': challenge,
-                    'signature': self.wallet.ethSign(challenge)
+                    'signature': self.alias.ethSign(challenge)
                 },
                 timeout=15
             )
@@ -168,7 +170,7 @@ class SatoriServerClient(object):
         url: str = None,
         payload: Union[str, dict, None] = None,
         challenge: str = None,
-        useWallet: Wallet = None,
+        signer: Wallet = None,
         extraHeaders: Union[dict, None] = None,
         raiseForStatus: bool = True,
     ) -> requests.Response:
@@ -238,7 +240,7 @@ class SatoriServerClient(object):
                 logging.warning(f'JWT auth failed, falling back to legacy: {e}')
 
             headers = {
-                **(useWallet or self.wallet).authPayload(
+                **(signer or self.alias).authPayload(
                     asDict=True,
                     challenge=challenge or self._getChallenge()),
                 **(extraHeaders or {}),
@@ -305,7 +307,7 @@ class SatoriServerClient(object):
         return self._makeAuthenticatedCall(
             function=requests.post,
             endpoint='/register/wallet',
-            payload=self.wallet.registerPayload())
+            payload=self.alias.registerPayload())
 
     def registerStream(self, stream: dict, payload: str = None):
         ''' publish stream {'source': 'test', 'name': 'stream1', 'target': 'target'}'''
@@ -375,57 +377,81 @@ class SatoriServerClient(object):
             endpoint='/restore/stream',
             payload=payload or json.dumps(stream or {}))
 
-    def checkin(self, vaultInfo: dict = None, nostrPubkey: str = None, version: str = None) -> dict:
-        """Check in with central server. For central-lite, uses auth challenge system."""
+    def register(
+        self,
+        walletLink: Union[dict, None] = None,
+        nostrPubkey: str = None,
+        version: str = None,
+    ) -> dict:
+        """Register the alias with the Satori Network (POST /api/v1/peer/register).
+
+        Headers: alias-pubkey, nostr-pubkey, neuron-version, and the wallet's
+        link (wallet-link, wallet-signature; see satorilib.wallet.link) when
+        there is one. Without a link the alias registers alone.
+
+        Returns the answer: wallet_address is the linked wallet's Base
+        address (or None), and wallet_link_error says why a sent link was
+        not accepted. Raises on a refusal or no answer.
+        """
+        from satorilib.wallet.link import linkHeaders
+        headers = {'alias-pubkey': self.alias.pubkey}
+        if nostrPubkey:
+            headers['nostr-pubkey'] = nostrPubkey
+        if version:
+            headers['neuron-version'] = version
+        headers.update(linkHeaders(walletLink))
+        response = requests.post(
+            self.url + '/api/v1/peer/register',
+            headers=headers,
+            timeout=10)
+        if response.status_code != 200:
+            raise Exception(
+                f'peer registration failed ({response.status_code}): {response.text}')
+        return response.json()
+
+    def checkin(
+        self,
+        walletLink: Union[dict, None] = None,
+        nostrPubkey: str = None,
+        version: str = None,
+    ) -> dict:
+        """Check in with central: register the alias (with the wallet's link when given).
+
+        The answer carries walletAddress (the linked wallet's Base address, or
+        None) and walletLinkError (why a sent link was refused, or None).
+        """
         challenge = self._getChallenge()
-
-        # Register peer with central-lite (no health check needed - registration will fail if server is down)
+        answer = {}
         try:
-            # For central-lite: Register peer with vault info and nostr pubkey
-            # Call /api/v1/peer/register with wallet-pubkey, vault-pubkey, nostr-pubkey headers
-            if vaultInfo and vaultInfo.get('vaultpubkey'):
-                try:
-                    headers = {
-                        'wallet-pubkey': self.wallet.pubkey,
-                        'vault-pubkey': vaultInfo.get('vaultpubkey'),
-                    }
-                    if nostrPubkey:
-                        headers['nostr-pubkey'] = nostrPubkey
-                    if version:
-                        headers['neuron-version'] = version
-                    register_response = requests.post(
-                        self.url + '/api/v1/peer/register',
-                        headers=headers,
-                        timeout=10
-                    )
-                    if register_response.status_code == 200:
-                        pass
-                    else:
-                        logging.warning(f'peer registration failed: {register_response.text}')
-                except Exception as e:
-                    logging.warning(f'peer registration error: {e}')
-
-            # Return minimal checkin data for central-lite
-            self.lastCheckin = time.time()
-            return {
-                'wallet': {
-                    'accepting': False,
-                    'rewardaddress': None,
-                },
-                'key': challenge,
-                'oracleKey': challenge,
-                'idKey': challenge,
-                'subscriptionKeys': [],
-                'publicationKeys': [],
-                'subscriptions': '[]',
-                'publications': '[]',
-                'pins': '[]',
-                'stakeRequired': 0,
-                'rewardaddress': None,
-            }
+            answer = self.register(
+                walletLink=walletLink,
+                nostrPubkey=nostrPubkey,
+                version=version) or {}
+            if answer.get('wallet_link_error'):
+                logging.warning(
+                    f"the Satori Network did not accept the wallet's link: "
+                    f"{answer.get('wallet_link_error')}")
         except Exception as e:
-            logging.error(f'central-lite connection failed: {e}', color='red')
-            raise Exception(f'Unable to connect to central-lite server: {e}')
+            logging.warning(f'peer registration error: {e}')
+        self.lastCheckin = time.time()
+        return {
+            'wallet': {
+                'accepting': False,
+                'rewardaddress': None,
+            },
+            'walletAddress': answer.get('wallet_address'),
+            'walletLinkError': answer.get('wallet_link_error'),
+            'key': challenge,
+            'oracleKey': challenge,
+            'idKey': challenge,
+            'subscriptionKeys': [],
+            'publicationKeys': [],
+            'subscriptions': '[]',
+            'publications': '[]',
+            'pins': '[]',
+            'stakeRequired': 0,
+            'rewardaddress': None,
+        }
 
     def checkinCheck(self) -> bool:
         """Check if there are updates since last checkin. Returns True if health check fails."""
@@ -537,16 +563,12 @@ class SatoriServerClient(object):
                 f'/votes_for/manifest/{wallet.publicKey}'
                 if isinstance(wallet, Wallet) else '/votes_for/manifest')).json()
 
-    def getSanctionVote(self, wallet: Wallet = None, vault: Wallet = None):
-        # logging.debug('vault', vault, color='yellow')
-        walletPubkey = wallet.publicKey if isinstance(
-            wallet, Wallet) else 'None'
-        vaultPubkey = vault.publicKey if isinstance(vault, Wallet) else 'None'
-        # logging.debug(
-        #    f'/votes_for/sanction/{walletPubkey}/{vaultPubkey}', color='yellow')
+    def getSanctionVote(self, alias: Wallet = None, wallet: Wallet = None):
+        aliasPubkey = alias.publicKey if isinstance(alias, Wallet) else 'None'
+        walletPubkey = wallet.publicKey if isinstance(wallet, Wallet) else 'None'
         return self._makeUnauthenticatedCall(
             function=requests.get,
-            endpoint=f'/votes_for/sanction/{walletPubkey}/{vaultPubkey}').json()
+            endpoint=f'/votes_for/sanction/{aliasPubkey}/{walletPubkey}').json()
 
     def marketStreamsSetPrice(self, streamUuid: str = None, pricePerObs: float = None) -> bool:
         """
@@ -676,25 +698,25 @@ class SatoriServerClient(object):
         return response['stake']
     
     def submitMaifestVote(self, wallet: Wallet, votes: dict[str, int]):
-        # todo authenticate the vault instead
+        # todo authenticate the wallet instead
         return self._makeAuthenticatedCall(
             function=requests.post,
             endpoint='/vote_on/manifest',
-            useWallet=wallet,
+            signer=wallet,
             payload=json.dumps(votes or {})).text
 
     def submitSanctionVote(self, wallet: Wallet, votes: dict[str, int]):
         return self._makeAuthenticatedCall(
             function=requests.post,
             endpoint='/vote_on/sanction',
-            useWallet=wallet,
+            signer=wallet,
             payload=json.dumps(votes or {})).text
 
     def removeSanctionVote(self, wallet: Wallet):
         return self._makeAuthenticatedCall(
             function=requests.Get,
             endpoint='/clear_votes_on/sanction',
-            useWallet=wallet).text
+            signer=wallet).text
 
     def pinDepinStream(self, stream: dict = None) -> tuple[bool, str]:
         ''' removes a stream from the server '''
@@ -713,7 +735,7 @@ class SatoriServerClient(object):
         try:
             # No authentication needed - query by wallet_pubkey
             response = requests.get(
-                self.url + f'/api/v1/peer/reward-address?wallet_pubkey={self.wallet.pubkey}',
+                self.url + f'/api/v1/peer/reward-address?wallet_pubkey={self.alias.pubkey}',
                 timeout=10)
 
             # 404 is expected for new peers that haven't registered yet
@@ -798,7 +820,7 @@ class SatoriServerClient(object):
             return response.json()
         except Exception as e:
             logging.warning(
-                'unable to disable status of Mine-To-Vault feature due to connection timeout; try again Later.', e, color='yellow')
+                'unable to get wallet stats due to connection timeout; try again Later.', e, color='yellow')
             return ''
 
     def stakeCheck(self) -> bool:
@@ -811,7 +833,7 @@ class SatoriServerClient(object):
                 return True
         except Exception as e:
             logging.warning(
-                'unable to disable status of Mine-To-Vault feature due to connection timeout; try again Later.', e, color='yellow')
+                'unable to check stake due to connection timeout; try again Later.', e, color='yellow')
             return False
         return False
 

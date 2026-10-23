@@ -26,7 +26,7 @@ def _response(status: int, text: str) -> requests.Response:
 
 
 def _client():
-    client = SatoriServerClient(wallet=MagicMock(), url=CENTRAL)
+    client = SatoriServerClient(alias=MagicMock(), url=CENTRAL)
     client._access_token = "access"
     client._token_expiry = datetime.now() + timedelta(hours=1)
     return client

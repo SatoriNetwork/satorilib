@@ -7,9 +7,9 @@ falls back to via authPayload) is
     "0x" + r || s || v  (65 bytes as hex, v in {27, 28}, low s)
 
 over keccak256("\\x19Ethereum Signed Message:\\n" + len(utf8 message) + message),
-made by the wallet's own secp256k1 key. Central recovers the signer and compares
-it with the Ethereum address of the `wallet-pubkey` header (the compressed
-pubkey, unchanged). There is no Evrmore signature on these paths.
+made by the signing key itself (the alias). Central recovers the signer and
+compares it with the Ethereum address of the `alias-pubkey` header (the
+compressed pubkey). There is no Evrmore signature on these paths.
 
 The fixed vector is the one central's tests use (a throwaway key,
 sha256("satori central eip191 login test vector")), so both sides are pinned to
@@ -78,23 +78,23 @@ def vectorWallet(tmp_path) -> EvrmoreWallet:
 
 
 @pytest.fixture
-def identity(tmp_path) -> EvrmoreWallet:
-    """A fresh identity wallet: unencrypted, as Lite keeps wallet.yaml."""
-    return _wallet(EvrmoreIdentity(walletPath=str(tmp_path / "wallet.yaml")))
+def alias(tmp_path) -> EvrmoreWallet:
+    """A fresh alias: unencrypted, as Lite keeps alias.yaml."""
+    return _wallet(EvrmoreIdentity(walletPath=str(tmp_path / "alias.yaml")))
 
 
 @pytest.fixture(scope="module")
-def vaultPath(tmp_path_factory) -> str:
-    """A vault file encrypted at rest with a password (slow to make, so one per module)."""
-    path = str(tmp_path_factory.mktemp("vault") / "vault.yaml")
-    EvrmoreIdentity(walletPath=path, password="vault pass")  # creates it, encrypted
+def walletPath(tmp_path_factory) -> str:
+    """A wallet file encrypted at rest with a password (slow to make, so one per module)."""
+    path = str(tmp_path_factory.mktemp("wallet") / "wallet.yaml")
+    EvrmoreIdentity(walletPath=path, password="wallet pass")  # creates it, encrypted
     return path
 
 
 @pytest.fixture(scope="module")
-def vault(vaultPath) -> EvrmoreWallet:
-    """The vault, unlocked with its password."""
-    return _wallet(EvrmoreIdentity(walletPath=vaultPath, password="vault pass"))
+def wallet(walletPath) -> EvrmoreWallet:
+    """The wallet, unlocked with its password."""
+    return _wallet(EvrmoreIdentity(walletPath=walletPath, password="wallet pass"))
 
 
 @pytest.fixture
@@ -117,7 +117,7 @@ def _loginResponse():
 # The fixed vector ##########################################################
 
 
-def test_vector_key_is_the_wallet_key(vectorWallet):
+def test_vector_key_is_the_key(vectorWallet):
     assert vectorWallet.pubkey == PUBKEY
     assert vectorWallet.address == EVRMORE_ADDRESS
     assert vectorWallet.ethAddress == ADDRESS
@@ -131,26 +131,26 @@ def test_vector_signature(vectorWallet):
     assert _recover(MESSAGE, signature) == ADDRESS
 
 
-# Recovery is the wallet's ethAddress, for the identity and for the vault ####
+# Recovery is the key's ethAddress, for the alias and for the wallet #######
 
 
-@pytest.mark.parametrize("which", ["identity", "vault"])
+@pytest.mark.parametrize("which", ["alias", "wallet"])
 def test_signature_recovers_to_ethAddress(which, request):
-    wallet = request.getfixturevalue(which)
+    key = request.getfixturevalue(which)
     message = "1760630400.123456"
-    signature = wallet.ethSign(message)
+    signature = key.ethSign(message)
     _assertEip191Form(signature)
-    assert _recover(message, signature) == wallet.ethAddress
-    assert _ethAddressOfPubkey(wallet.pubkey) == wallet.ethAddress
+    assert _recover(message, signature) == key.ethAddress
+    assert _ethAddressOfPubkey(key.pubkey) == key.ethAddress
 
 
-def test_identity_and_vault_sign_with_their_own_keys(identity, vault):
-    assert identity.ethAddress != vault.ethAddress
-    assert _recover("m", vault.ethSign("m")) == vault.ethAddress
+def test_alias_and_wallet_sign_with_their_own_keys(alias, wallet):
+    assert alias.ethAddress != wallet.ethAddress
+    assert _recover("m", wallet.ethSign("m")) == wallet.ethAddress
 
 
-def test_locked_vault_cannot_sign(vaultPath):
-    locked = EvrmoreIdentity(walletPath=vaultPath)  # no password
+def test_locked_wallet_cannot_sign(walletPath):
+    locked = EvrmoreIdentity(walletPath=walletPath)  # no password
     assert locked.isEncrypted
     with pytest.raises(Exception, match="locked"):
         locked.ethSign("m")
@@ -164,40 +164,40 @@ def test_authPayload_shape(vectorWallet, noEvrmoreSigning):
     # no Evrmore address: central reads only these three headers
     assert payload == {
         "message": MESSAGE,
-        "wallet-pubkey": PUBKEY,
+        "alias-pubkey": PUBKEY,
         "signature": EIP191_SIG,
     }
     assert json.loads(vectorWallet.authPayload(challenge=MESSAGE)) == payload
 
 
-def test_authPayload_without_challenge_signs_a_fresh_message(identity, noEvrmoreSigning):
-    payload = identity.authPayload(asDict=True)
+def test_authPayload_without_challenge_signs_a_fresh_message(alias, noEvrmoreSigning):
+    payload = alias.authPayload(asDict=True)
     assert payload["message"]
     _assertEip191Form(payload["signature"])
-    assert _recover(payload["message"], payload["signature"]) == identity.ethAddress
+    assert _recover(payload["message"], payload["signature"]) == alias.ethAddress
 
 
 # SatoriServerClient #########################################################
 
 
-def test_login_signs_eip191(identity, noEvrmoreSigning):
-    client = SatoriServerClient(wallet=identity, url=CENTRAL)
+def test_login_signs_eip191(alias, noEvrmoreSigning):
+    client = SatoriServerClient(alias=alias, url=CENTRAL)
     with patch("satorilib.server.server.requests.post", return_value=_loginResponse()) as post:
         client._login_with_jwt()
     (url,), kwargs = post.call_args
     headers = kwargs["headers"]
     assert url == CENTRAL + "/api/v1/auth/login"
-    assert set(headers) == {"wallet-pubkey", "message", "signature"}
-    assert headers["wallet-pubkey"] == identity.pubkey
+    assert set(headers) == {"alias-pubkey", "message", "signature"}
+    assert headers["alias-pubkey"] == alias.pubkey
     _assertEip191Form(headers["signature"])
-    assert _recover(headers["message"], headers["signature"]) == identity.ethAddress
+    assert _recover(headers["message"], headers["signature"]) == alias.ethAddress
     assert client._access_token == "access"
 
 
-@pytest.mark.parametrize("useVault", [False, True])
-def test_legacy_fallback_signs_eip191(identity, vault, useVault, noEvrmoreSigning):
-    client = SatoriServerClient(wallet=identity, url=CENTRAL)
-    signer = vault if useVault else identity
+@pytest.mark.parametrize("useWallet", [False, True])
+def test_legacy_fallback_signs_eip191(alias, wallet, useWallet, noEvrmoreSigning):
+    client = SatoriServerClient(alias=alias, url=CENTRAL)
+    signer = wallet if useWallet else alias
     sent = {}
 
     def call(url, headers=None, data=None, timeout=None):
@@ -209,8 +209,8 @@ def test_legacy_fallback_signs_eip191(identity, vault, useVault, noEvrmoreSignin
             function=call,
             endpoint="/api/v1/balance/get",
             challenge="challenge-from-central",
-            useWallet=vault if useVault else None)
+            signer=wallet if useWallet else None)
     assert sent["message"] == "challenge-from-central"
-    assert sent["wallet-pubkey"] == signer.pubkey
+    assert sent["alias-pubkey"] == signer.pubkey
     _assertEip191Form(sent["signature"])
     assert _recover("challenge-from-central", sent["signature"]) == signer.ethAddress

@@ -15,19 +15,27 @@ subpackages so that downstream applications can pull in only what they need.
 
 ## Capabilities
 
-- **Wallets and identity** (`satorilib.wallet`)
-  Multi-chain wallets for Evrmore, Ravencoin, and Ethereum, with key
-  derivation, signing, and identity primitives.
+- **Keys and signing** (`satorilib.wallet`)
+  Multi-chain key classes for Evrmore, Ravencoin, and Ethereum, with key
+  derivation, encryption at rest, and signing. A neuron holds two keys: the
+  **alias**, its automated signing key, kept unencrypted; and the **wallet**,
+  the person's own key that holds the funds, encrypted with their password.
+  `satorilib.wallet.link` makes the wallet's **link** to its alias: an
+  EIP-191 (`personal_sign`) signature by the wallet of
+  `Satori: link this alias to my wallet` / `alias: 0x…` / `wallet: 0x…` /
+  `issued: <unix seconds>` (EIP-55 addresses, one per line).
 - **Server client** (`satorilib.server`)
-  Authenticated HTTP client for the Satori central server: checkin,
-  balances, stream and subscription management, and OFAC compliance helpers.
-  Every central-auth signature (JWT login, and the legacy header auth built
-  by `authPayload`) is EIP-191 (Ethereum `personal_sign`) by the wallet's own
-  key, from `wallet.ethSign(message)`: `0x` + r‖s‖v hex, v 27/28. Headers are
-  `wallet-pubkey` (compressed secp256k1 hex), `message`, `signature`; central
-  recovers the signer and compares it with the Ethereum address of
-  `wallet-pubkey`. This needs a central with EIP-191 login (its
-  `base-upgrade` branch, or later).
+  Authenticated HTTP client for the Satori Network (central): register,
+  login, balances, stream and subscription management. `SatoriServerClient`
+  acts as the alias. Register (`POST /api/v1/peer/register`) sends
+  `alias-pubkey`, `nostr-pubkey`, `neuron-version`, and, once a wallet
+  exists, its link as `wallet-link` (base64 of the message's UTF-8) and
+  `wallet-signature`; the answer's `wallet_address` is the linked wallet's
+  Base address (or null) and `wallet_link_error` says why a link was
+  refused. Login (`POST /api/v1/auth/login`) and the legacy header auth
+  built by `authPayload` send `alias-pubkey` (compressed secp256k1 hex),
+  `message`, `signature`, where the signature is EIP-191 by the alias, from
+  `alias.ethSign(message)`: `0x` + r‖s‖v hex, v 27/28.
 - **Domain concepts** (`satorilib.concepts`)
   Canonical data structures for streams, observations, identifiers, and
   related domain objects shared across the network.

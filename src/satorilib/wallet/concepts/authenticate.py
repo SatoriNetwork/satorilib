@@ -1,18 +1,18 @@
 # a satori node authenticates to central by signing a message (central's challenge,
 # or the date in UTC now) and sending its public key, the message and the signature.
 # the signature is EIP-191 (Ethereum personal_sign); central recovers the signer and
-# compares it with the Ethereum address of wallet-pubkey.
+# compares it with the Ethereum address of alias-pubkey.
 import json
 from satorilib.utils.time import nowStr
 
 
-def authPayload(wallet, challenge: str = None):
-    ''' headers for central's legacy auth (see authenticate in central) '''
+def authPayload(signer, challenge: str = None):
+    ''' headers for central's legacy auth (see authenticate in central), signed by signer (the alias) '''
     challenge = challenge or getFullDateMessage()
     return {
         'message': challenge,
-        'wallet-pubkey': wallet.pubkey,
-        'signature': wallet.ethSign(challenge)}
+        'alias-pubkey': signer.pubkey,
+        'signature': signer.ethSign(challenge)}
 
 
 def getFullDateMessage():
@@ -29,8 +29,8 @@ class AuthPayload:
     '''
 
     @staticmethod
-    def create(wallet, challenge: str = None) -> 'AuthPayload':
-        return AuthPayload(raw=authPayload(wallet, challenge))
+    def create(signer, challenge: str = None) -> 'AuthPayload':
+        return AuthPayload(raw=authPayload(signer, challenge))
 
     def __init__(self, raw: dict = None):
         self.message: str = raw.get('message')
