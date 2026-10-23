@@ -442,6 +442,18 @@ class BountyAnnouncement:
         return cls.from_dict(json.loads(json_str))
 
 
+def announcedAliasPubkey(metadata: dict[str, Any] | None) -> str | None:
+    """The publisher's alias pubkey from a stream announcement's metadata.
+
+    The current form names it alias_pubkey; an older neuron's announcement
+    (they stay on the relays) names it wallet_pubkey (the same key).
+    """
+    metadata = metadata or {}
+    if metadata.get('alias_pubkey'):
+        return metadata['alias_pubkey']
+    return metadata.get('wallet_pubkey')
+
+
 def predictorAliasPubkey(content: dict[str, Any]) -> str | None:
     """The predictor's alias pubkey from a prediction submission's content.
 

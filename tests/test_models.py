@@ -380,3 +380,20 @@ class TestSatoriNostrConfig:
             relay_urls=["wss://r1.com", "wss://r2.com", "wss://r3.com"],
         )
         assert len(c.relay_urls) == 3
+
+
+class TestAnnouncedAliasPubkey:
+    """A stream announcement's metadata names the publisher's alias pubkey."""
+
+    def test_current_form(self):
+        from satorilib.satori_nostr.models import announcedAliasPubkey
+        assert announcedAliasPubkey({'alias_pubkey': '02aa'}) == '02aa'
+
+    def test_an_older_neurons_wallet_pubkey_is_the_alias(self):
+        from satorilib.satori_nostr.models import announcedAliasPubkey
+        assert announcedAliasPubkey({'wallet_pubkey': '02bb'}) == '02bb'
+
+    def test_none(self):
+        from satorilib.satori_nostr.models import announcedAliasPubkey
+        assert announcedAliasPubkey(None) is None
+        assert announcedAliasPubkey({}) is None
