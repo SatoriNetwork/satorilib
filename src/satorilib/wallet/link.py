@@ -56,6 +56,13 @@ def linkHeaders(link: Union[dict, None]) -> dict:
         'wallet-signature': link['signature']}
 
 
+# What the neuron reports its alias is for, and that a neuron reports it (the
+# Satori Service's alias_reports): one key, used for off-chain scoring
+# (predictions to the Satori Service) and on-chain (the alias the wallet
+# delegates to signs the daily batch on the Satori contract).
+ALIAS_REPORT = {'alias-scoring': 'offchain,onchain', 'alias-reported-by': 'neuron'}
+
+
 def linkFields(message: str) -> dict:
     ''' {'alias', 'wallet', 'issued'} read from a link message ({} if it is not one) '''
     lines = (message or '').split('\n')

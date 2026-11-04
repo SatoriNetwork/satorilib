@@ -112,7 +112,8 @@ def test_register_without_a_link_sends_the_alias_alone(alias):
     (url,), kwargs = post.call_args
     assert url == CENTRAL + "/api/v1/peer/register"
     assert kwargs["headers"] == {
-        "alias-pubkey": alias.pubkey, "nostr-pubkey": NOSTR, "neuron-version": "1.2.3"}
+        "alias-pubkey": alias.pubkey, "alias-scoring": "offchain,onchain", "alias-reported-by": "neuron",
+        "nostr-pubkey": NOSTR, "neuron-version": "1.2.3"}
     assert answer["wallet_address"] is None
 
 
@@ -124,7 +125,8 @@ def test_register_sends_the_link(alias, wallet):
         client.register(walletLink=link, nostrPubkey=NOSTR, version="1.2.3")
     headers = post.call_args.kwargs["headers"]
     assert set(headers) == {
-        "alias-pubkey", "nostr-pubkey", "neuron-version", "wallet-link", "wallet-signature"}
+        "alias-pubkey", "alias-scoring", "alias-reported-by", "nostr-pubkey", "neuron-version", "wallet-link",
+        "wallet-signature"}
     assert "wallet-pubkey" not in headers and "vault-pubkey" not in headers
     assert base64.b64decode(headers["wallet-link"]).decode() == link["message"]
 

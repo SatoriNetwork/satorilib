@@ -385,16 +385,18 @@ class SatoriServerClient(object):
     ) -> dict:
         """Register the alias with the Satori Network (POST /api/v1/peer/register).
 
-        Headers: alias-pubkey, nostr-pubkey, neuron-version, and the wallet's
-        link (wallet-link, wallet-signature; see satorilib.wallet.link) when
-        there is one. Without a link the alias registers alone.
+        Headers: alias-pubkey, what it is for (alias-scoring,
+        alias-reported-by: satorilib.wallet.link.ALIAS_REPORT), nostr-pubkey,
+        neuron-version, and the wallet's link (wallet-link, wallet-signature;
+        see satorilib.wallet.link) when there is one. Without a link the alias
+        registers alone.
 
         Returns the answer: wallet_address is the linked wallet's Base
         address (or None), and wallet_link_error says why a sent link was
         not accepted. Raises on a refusal or no answer.
         """
-        from satorilib.wallet.link import linkHeaders
-        headers = {'alias-pubkey': self.alias.pubkey}
+        from satorilib.wallet.link import ALIAS_REPORT, linkHeaders
+        headers = {'alias-pubkey': self.alias.pubkey, **ALIAS_REPORT}
         if nostrPubkey:
             headers['nostr-pubkey'] = nostrPubkey
         if version:
