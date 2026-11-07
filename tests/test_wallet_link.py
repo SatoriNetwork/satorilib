@@ -7,10 +7,11 @@ The link is an EIP-191 (personal_sign) signature by the wallet of exactly
     wallet: 0x<the wallet's address, EIP-55>
     issued: <unix seconds>
 
-Register sends alias-pubkey, nostr-pubkey, neuron-version, and the link as
-wallet-link (base64 of the message's UTF-8) and wallet-signature. Its answer
-names wallet_address (the linked wallet's Base address, or null) and may carry
-wallet_link_error.
+Register sends alias-pubkey, nostr-pubkey, neuron-version, the link as
+wallet-link (base64 of the message's UTF-8) and wallet-signature, and the
+alias's proof: message (a fresh challenge) and signature (the alias's EIP-191
+signature of it). Its answer names wallet_address (the linked wallet's Base
+address, or null) and may carry wallet_link_error.
 """
 
 import base64
@@ -107,26 +108,43 @@ def _answer(body: dict):
 def test_register_without_a_link_sends_the_alias_alone(alias):
     client = SatoriServerClient(alias=alias, url=CENTRAL)
     with patch("satorilib.server.server.requests.post",
-               return_value=_answer({"success": True, "peer_id": 7, "wallet_address": None})) as post:
+               return_value=_answer({"success": True, "peer_id": 7, "wallet_address": None})) as post, \
+            patch.object(client, "_getChallenge", return_value="c1"):
         answer = client.register(nostrPubkey=NOSTR, version="1.2.3")
     (url,), kwargs = post.call_args
     assert url == CENTRAL + "/api/v1/peer/register"
     assert kwargs["headers"] == {
         "alias-pubkey": alias.pubkey, "alias-scoring": "offchain,onchain", "alias-reported-by": "neuron",
-        "nostr-pubkey": NOSTR, "neuron-version": "1.2.3"}
+        "nostr-pubkey": NOSTR, "neuron-version": "1.2.3",
+        "message": "c1", "signature": alias.ethSign("c1")}
     assert answer["wallet_address"] is None
+
+
+def test_register_proves_the_alias_with_a_fresh_challenge_each_time(alias):
+    client = SatoriServerClient(alias=alias, url=CENTRAL)
+    with patch("satorilib.server.server.requests.post",
+               return_value=_answer({"success": True, "wallet_address": None})) as post, \
+            patch.object(client, "_getChallenge", side_effect=["c1", "c2"]):
+        client.register()
+        client.register()
+    sent = [call.kwargs["headers"] for call in post.call_args_list]
+    assert [h["message"] for h in sent] == ["c1", "c2"]
+    for h in sent:
+        signer = Account.recover_message(encode_defunct(text=h["message"]), signature=h["signature"])
+        assert signer == alias.ethAddress
 
 
 def test_register_sends_the_link(alias, wallet):
     link = makeLink(wallet, alias.ethAddress)
     client = SatoriServerClient(alias=alias, url=CENTRAL)
     with patch("satorilib.server.server.requests.post",
-               return_value=_answer({"success": True, "wallet_address": wallet.ethAddress})) as post:
+               return_value=_answer({"success": True, "wallet_address": wallet.ethAddress})) as post, \
+            patch.object(client, "_getChallenge", return_value="c1"):
         client.register(walletLink=link, nostrPubkey=NOSTR, version="1.2.3")
     headers = post.call_args.kwargs["headers"]
     assert set(headers) == {
         "alias-pubkey", "alias-scoring", "alias-reported-by", "nostr-pubkey", "neuron-version", "wallet-link",
-        "wallet-signature"}
+        "wallet-signature", "message", "signature"}
     assert "wallet-pubkey" not in headers and "vault-pubkey" not in headers
     assert base64.b64decode(headers["wallet-link"]).decode() == link["message"]
 
@@ -134,7 +152,8 @@ def test_register_sends_the_link(alias, wallet):
 def test_register_refusal_raises(alias):
     client = SatoriServerClient(alias=alias, url=CENTRAL)
     refused = MagicMock(status_code=409, ok=False, text="taken")
-    with patch("satorilib.server.server.requests.post", return_value=refused):
+    with patch("satorilib.server.server.requests.post", return_value=refused), \
+            patch.object(client, "_getChallenge", return_value="c1"):
         with pytest.raises(Exception, match="409"):
             client.register()
 

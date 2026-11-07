@@ -387,9 +387,12 @@ class SatoriServerClient(object):
 
         Headers: alias-pubkey, what it is for (alias-scoring,
         alias-reported-by: satorilib.wallet.link.ALIAS_REPORT), nostr-pubkey,
-        neuron-version, and the wallet's link (wallet-link, wallet-signature;
-        see satorilib.wallet.link) when there is one. Without a link the alias
-        registers alone.
+        neuron-version, the wallet's link (wallet-link, wallet-signature;
+        see satorilib.wallet.link) when there is one, and the alias's proof:
+        message (a fresh challenge, used up by the register) and signature
+        (the alias's EIP-191 signature of it). Central needs the proof to move
+        the alias to another wallet or replace its Nostr key. Without a link
+        the alias registers alone.
 
         Returns the answer: wallet_address is the linked wallet's Base
         address (or None), and wallet_link_error says why a sent link was
@@ -402,6 +405,9 @@ class SatoriServerClient(object):
         if version:
             headers['neuron-version'] = version
         headers.update(linkHeaders(walletLink))
+        challenge = self._getChallenge()
+        headers['message'] = challenge
+        headers['signature'] = self.alias.ethSign(challenge)
         response = requests.post(
             self.url + '/api/v1/peer/register',
             headers=headers,
