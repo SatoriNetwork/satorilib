@@ -37,10 +37,10 @@ from satorilib.satori_nostr.models import (
 
 class TestConstants:
     def test_kind_values(self):
-        assert KIND_DATASTREAM_ANNOUNCE == 30100
-        assert KIND_DATASTREAM_DATA == 30101
-        assert KIND_SUBSCRIPTION_ANNOUNCE == 30102
-        assert KIND_PAYMENT == 30103
+        assert KIND_DATASTREAM_ANNOUNCE == 34600
+        assert KIND_DATASTREAM_DATA == 34601
+        assert KIND_SUBSCRIPTION_ANNOUNCE == 34602
+        assert KIND_PAYMENT == 34603
 
     def test_cadence_values(self):
         assert CADENCE_REALTIME == 1
@@ -156,11 +156,11 @@ class TestDatastreamMetadata:
         last_obs = int(time.time()) - 43200
         assert m.is_likely_active(last_obs) is True
 
-    def test_is_likely_active_irregular_stale(self):
+    def test_is_likely_active_irregular_never_stale(self):
         m = make_metadata(cadence_seconds=None)
-        # Last observation 25 hours ago (> 24h)
+        # A stream with no cadence is always active, however old its last observation
         last_obs = int(time.time()) - 90000
-        assert m.is_likely_active(last_obs) is False
+        assert m.is_likely_active(last_obs) is True
 
     def test_is_likely_active_custom_multiplier(self):
         m = make_metadata(cadence_seconds=3600)
@@ -335,7 +335,7 @@ class TestInboundTypes:
 
     def test_inbound_observation_with_raw(self):
         obs = make_observation()
-        raw = {"id": "abc", "kind": 30101}
+        raw = {"id": "abc", "kind": 34601}
         inbound = InboundObservation(
             stream_name="btc-price",
             nostr_pubkey="aa" * 32,
