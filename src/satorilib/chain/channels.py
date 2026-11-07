@@ -280,7 +280,7 @@ def lock_error(lock):
     """SATORI's transfer lock in plain words (a funded channel needs SATORI the wallet can send), or None."""
     if not lock['locked']:
         return None
-    why = ("Your wallet is staked with this neuron, so it can't send SATORI" if lock['indefinite']
+    why = ("Your wallet is staked with this app, so it can't send SATORI" if lock['indefinite']
            else f"Your wallet's SATORI can't be sent until {_fmt_utc(lock['free_at'])} (round {lock['until_round'] + 1})")
     return ChannelError(f'{why}: a channel needs SATORI the wallet can send.', reason='Locked')
 

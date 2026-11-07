@@ -96,7 +96,7 @@ def test_the_transfer_lock_in_plain_words():
     assert transfer_lock(0, 20747) == {'locked': False, 'indefinite': False, 'until_round': None, 'free_at': None}
     assert lock_error(transfer_lock(20746, 20747)) is None  # ended
     staked = lock_error(transfer_lock(2 ** 24 - 1, 20747))
-    assert str(staked) == ("Your wallet is staked with this neuron, so it can't send SATORI: "
+    assert str(staked) == ("Your wallet is staked with this app, so it can't send SATORI: "
                            "a channel needs SATORI the wallet can send.")
     assert staked.reason == 'Locked'
     after = lock_error(transfer_lock(20747, 20747))
@@ -220,6 +220,6 @@ def test_a_staked_wallet_is_refused_before_anything_is_signed_or_sent():
     chans = PaymentChannels(client, CHAIN, token='0x' + '4' * 40)
     chans._lock_state = lambda wallet: (2 ** 24 - 1, 20747)
     chans._permit = lambda *a: pytest.fail('signed a permit')
-    with pytest.raises(ChannelError, match="Your wallet is staked with this neuron, so it can't send SATORI"):
+    with pytest.raises(ChannelError, match="Your wallet is staked with this app, so it can't send SATORI"):
         chans.open_channel(KEY, SIGNER, '0x' + '2' * 40, 100)
     assert client.sent == []

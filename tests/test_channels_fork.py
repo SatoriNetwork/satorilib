@@ -132,7 +132,7 @@ def test_a_staked_wallet_cant_fund_a_channel_said_in_plain_words(fork):
     chans = PaymentChannels(fork, 84532, TOKEN)
     assert chans._lock_state(wallet.address)[0] == 2 ** 24 - 1
     before = fork.w3.eth.get_transaction_count(wallet.address)
-    with pytest.raises(ChannelError, match="Your wallet is staked with this neuron, so it can't send SATORI: "
+    with pytest.raises(ChannelError, match="Your wallet is staked with this app, so it can't send SATORI: "
                                            "a channel needs SATORI the wallet can send."):
         chans.open_channel(wallet.key.to_0x_hex(), alias.address, Account.create().address, 10 ** 15)
     assert fork.w3.eth.get_transaction_count(wallet.address) == before  # nothing sent
