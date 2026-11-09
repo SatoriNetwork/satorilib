@@ -1,8 +1,8 @@
 """Payment channels on Base (satorilib.chain.channels), checked against the
 browser neuron's fixtures so both sides make and accept the same bytes:
-channel ids and voucher digests the deployed contract computed
+channel ids and voucher digests the deployed contract (v3, on Base) computed
 (fixtures/channels-vectors.json), and voucher and binding signatures the
-browser's own code made (fixtures/channels-signatures.json)."""
+browser's own code made for it (fixtures/channels-signatures.json)."""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +26,8 @@ CH = SIG['channelId']
 
 
 def test_the_address_is_the_deployed_contract():
-    assert ADDRESS == VEC['contract']
+    assert ADDRESS == VEC['contract'] == SIG['contract']
+    assert CHAIN == SIG['chainId'] == 8453
 
 
 @pytest.mark.parametrize('v', VEC['ids'])
@@ -56,7 +57,7 @@ def test_verify_voucher_refuses_another_signer_channel_amount_chain_or_contract(
     assert not verify_voucher('0x' + '1' * 40, sig, CHAIN, CH, 1000)
     assert not verify_voucher(me, sig, CHAIN, VEC['ids'][0]['id'], 1000)
     assert not verify_voucher(me, sig, CHAIN, CH, 1001)
-    assert not verify_voucher(me, sig, 8453, CH, 1000)
+    assert not verify_voucher(me, sig, 84532, CH, 1000)
     assert not verify_voucher(me, sig, CHAIN, CH, 1000, contract='0x' + '2' * 40)
     assert not verify_voucher(me, sign_voucher(OTHER, CHAIN, CH, 1000), CHAIN, CH, 1000)
 
@@ -115,7 +116,8 @@ def test_contract_errors_in_plain_words():
     def err(sig, args=''):
         return Custom('0x' + keccak(text=sig)[:4].hex() + args)
 
-    assert channel_error_text(err('CloseNotReady()')) == "The 7-day grace period after the close request hasn't ended yet."
+    assert channel_error_text(err('CloseNotReady()')) == "The waiting period after the close request hasn't ended yet."
+    assert channel_error_text(err('NotPayerOrPayee()')) == "Only the buyer's or the seller's wallet can do that."
     assert channel_error_text(err('Locked()')) == ("The wallet's SATORI can't be sent now: it is staked, "
                                                    "or it predicted by hand this round or the last.")
     assert channel_error_text(err('ERC20InsufficientBalance(address,uint256,uint256)', '00' * 96)) == 'Not enough SATORI in the wallet.'
@@ -139,12 +141,15 @@ class _Fn:
 
 
 class _Contract:
-    """getChannel answered from `held`; every write recorded with its gas pad."""
+    """getChannel and getTerms answered from `held` and `terms`; every write recorded with its gas pad."""
 
-    def __init__(self, held):
+    def __init__(self, held, terms=None):
         self.held = held
+        self.terms = terms or {}
         self.functions = SimpleNamespace(
             getChannel=lambda cid: _Fn(self.held.get('0x' + bytes(cid).hex(), (ZERO, 0, ZERO, 0, ZERO, 0, False, ZERO))),
+            getTerms=lambda cid: _Fn(self.terms.get('0x' + bytes(cid).hex(), (pc.CLOSE_GRACE_S, self.held.get(
+                '0x' + bytes(cid).hex(), (ZERO,) * 3)[2]))),
             settleMany=lambda ids, cums, sigs: ('settleMany', ['0x' + bytes(i).hex() for i in ids], list(cums)),
             requestClose=lambda cid: ('requestClose', '0x' + bytes(cid).hex()),
             withdraw=lambda cid: ('withdraw', '0x' + bytes(cid).hex()))
@@ -210,7 +215,11 @@ def test_read_channel():
     assert chans.read_channel(CH) == {
         'id': CH, 'payer': SIGNER, 'payee': '0x' + '2' * 40, 'token': '0x' + '4' * 40, 'signer': SIGNER,
         'deposit': 100, 'settled': 30, 'close_requested_at': 1_792_100_000, 'closed': False,
-        'grace_ends_at': 1_792_100_000 + pc.CLOSE_GRACE_S}
+        'grace': pc.CLOSE_GRACE_S, 'payout': '0x' + '2' * 40, 'grace_ends_at': 1_792_100_000 + pc.CLOSE_GRACE_S}
+    # v3: a side changed the grace period (setGrace) and the seller named a payout address (setPayout)
+    client._contract.terms[CH] = (3 * 86400, '0x' + '5' * 40)
+    ch = chans.read_channel(CH)
+    assert (ch['grace'], ch['payout'], ch['grace_ends_at']) == (3 * 86400, '0x' + '5' * 40, 1_792_100_000 + 3 * 86400)
     client._contract.held[CH] = (ZERO, 0, ZERO, 0, ZERO, 0, False, ZERO)
     assert chans.read_channel(CH) is None
 

@@ -1,23 +1,25 @@
 {
- "made": "Once, 2026-10-21, by the browser neuron's own code (Satori/satori: src/chain/channels.js signVoucher and voucherDigest; the binding is viem's signMessage of src/neuron/market.js bindingText), with the throwaway key below, chain 84532 and PaymentChannels 0xeF3f87042cd9619729E5D69Da2fF90F89EA6976c. Signatures are deterministic (RFC 6979), so satorilib must produce these exact bytes.",
+ "made": "2026-11-09, by the browser app's own code (Satori/satori 6eb91ba: src/chain/channels.js signVoucher and voucherDigest; the binding is viem's signMessage of src/neuron/market.js bindingText, the same bytes as the 2026-10-21 fixture), with the throwaway key below, Base (chain 8453) and PaymentChannels v3. Signatures are deterministic (RFC 6979), so satorilib must produce these exact bytes.",
+ "chainId": 8453,
+ "contract": "0xa6DCa52936EAb8DD1EC9f8AD98e75D1Afb0DC16c",
  "key": "0x2222222222222222222222222222222222222222222222222222222222222222",
  "address": "0x1563915e194D8CfBA1943570603F7606A3115508",
  "channelId": "0x8583220d4efcb3f12a6812a3e36dad41949de1843f37bfe07b3bacdcf4c658a8",
  "vouchers": [
   {
    "cumulative": "1",
-   "digest": "0x025754880e515cd315919c61ae725a5417045e744d9473893b5a84dd2c65e07a",
-   "signature": "0x2ec082d68fcfc9da64b31a0d97b185c8b0e61c5d31da1e4797959c1d77e097f91d6932665a06bd78d1e2f0a5e5dd90bad37d712fd29d25b94a753e9158e7df921c"
+   "digest": "0x7a393a2ec3bfafeb6d3d316096dd92edd40929a227cb9dfe4e7c7f362761d214",
+   "signature": "0x51f6c944fe624a51a4bdae600a9c8e50eaaee91a742201a9894ab65320d01c525993abd3832b17aafc1a0dd21a168954c57bd600ff086892dbf9ccee215c78571b"
   },
   {
    "cumulative": "10000000000000",
-   "digest": "0x7e815170371da527a3836dd6577482f515b0e6d0332b16e878bcae7bc6e03750",
-   "signature": "0x02b584fda8b77b67c0a13be9ac556d011dd86a08c64371331038e00d6648ad5026eb2b1c165183eb64d33d2f9c89de1527af1484d7f42c61f2bbe3572e9bcb3e1b"
+   "digest": "0x0880203ae4618e9873fecf6a390020c92875690ad9d2a86e1ed759f9f7bc5f43",
+   "signature": "0x290553302646ec862e90b3bc5cc9b6be9dbb51f9dd6bf85d2288e4374440f4cd75985ecfb364e16de2d7b4047298b49664494184e55df8df66b6cf05384ea63e1c"
   },
   {
    "cumulative": "24000000000000000",
-   "digest": "0x93e459765af2eb967b840df84035f947135b472af31632f1c45f80644719319e",
-   "signature": "0xf8713c43884f5aae629707a7284edb18b404dc4fdc91cbb5bde8f4d16129a9211ba3e55063b1eb6145eed32e0d9a5e72d36db728559c60110e925cca0d26d7a21c"
+   "digest": "0xc9d70b5ebe7b47a92572d2e5808e04445705f55d8dbfd492ebb242d999eed371",
+   "signature": "0xb2e90bb58d2fecfd2fa9047220e028cc51b93e7861dbed969c37c7698af19f9952944bd548e56084af9bb048c1892f9cfafbffca562b8f2519e2c6b74c0cb2861b"
   }
  ],
  "binding": {

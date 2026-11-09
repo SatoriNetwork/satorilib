@@ -12,7 +12,10 @@ wallet (`settle_many`). Amounts are int wei; keys are 0x private keys.
     chans.open_channel(wallet_key, alias_address, payee, deposit) → {id, hash, permit}
     sign_voucher(alias_key, chain_id, channel_id, cumulative) / verify_voucher(signer, sig, …)
     chans.settle_many(alias_key, [{id, cumulative, signature}]) → {hash, settled, skipped}
-    chans.request_close(alias_key, id) … CLOSE_GRACE_S … chans.withdraw(alias_key, id)
+    chans.request_close(alias_key, id) … the channel's grace period … chans.withdraw(alias_key, id)
+
+The contract is PaymentChannels v3. Its reuse calls (topUp, cancelClose, withdrawTo, setGrace,
+setPayout) are the browser app's; a channel's grace period is read from it (getTerms).
 """
 import os
 import time
@@ -23,9 +26,10 @@ from eth_account import Account
 from eth_account.messages import encode_defunct, encode_typed_data
 from eth_utils import keccak, to_checksum_address
 
-# PaymentChannels, deployed by CREATE2: the same address on every chain. Not central's to say.
-ADDRESS = '0xeF3f87042cd9619729E5D69Da2fF90F89EA6976c'
-CLOSE_GRACE_S = 7 * 86400  # CLOSE_GRACE_PERIOD: requestClose → withdraw
+# PaymentChannels v3, deployed by CREATE2: the same address on every chain (contract repo
+# satori/deployments/payment-channels.json). Not central's to say.
+ADDRESS = '0xa6DCa52936EAb8DD1EC9f8AD98e75D1Afb0DC16c'
+CLOSE_GRACE_S = 7 * 86400  # CLOSE_GRACE_PERIOD: requestClose → withdraw, until a side changes it (setGrace)
 MAX_AMOUNT = 2 ** 96 - 1  # amounts are uint96 wei
 # Gas over the estimate: a payment into a staked wallet runs the token's delegation
 # hook, and a starved hook is skipped silently on D6 (the contract doc). settleMany
@@ -64,6 +68,8 @@ CHANNELS_ABI = [
     _fn('withdraw', [('channelId', 'bytes32')]),
     {'name': 'getChannel', 'type': 'function', 'stateMutability': 'view', 'inputs': [{'name': 'channelId', 'type': 'bytes32'}],
      'outputs': [{'name': '', 'type': 'tuple', 'components': _CHANNEL}]},
+    _fn('getTerms', [('channelId', 'bytes32')], [{'name': 'grace', 'type': 'uint64'},
+                                                 {'name': 'payout', 'type': 'address'}], view=True),
     {'name': 'Settled', 'type': 'event', 'anonymous': False, 'inputs': [
         {'name': 'channelId', 'type': 'bytes32', 'indexed': True}, {'name': 'payer', 'type': 'address', 'indexed': True},
         {'name': 'payee', 'type': 'address', 'indexed': True}, {'name': 'cumulativeAmount', 'type': 'uint96', 'indexed': False},
@@ -101,10 +107,11 @@ PLAIN = {
     'NotPayee': "Only the seller (the channel's payee) can do that.",
     'NotPayer': 'Only the wallet that funded the channel can do that.',
     'NotPayerOrSigner': "Only the channel's wallet or alias can do that.",
+    'NotPayerOrPayee': "Only the buyer's or the seller's wallet can do that.",
     'BadSignature': "The voucher's signature isn't the channel's signer's.",
     'NothingToSettle': 'Nothing new to settle: the voucher pays no more than is already paid.',
     'CloseNotRequested': 'No close was asked for this channel.',
-    'CloseNotReady': "The 7-day grace period after the close request hasn't ended yet.",
+    'CloseNotReady': "The waiting period after the close request hasn't ended yet.",
     'UnsupportedToken': "The token takes a fee on transfer, which channels can't hold.",
     'SafeERC20FailedOperation': 'The token refused the transfer.',
     'Locked': "The wallet's SATORI can't be sent now: it is staked, or it predicted by hand this round or the last.",
@@ -113,7 +120,7 @@ PLAIN = {
     'HookFailedWithoutReason': 'The transaction ran out of gas; try again.',
 }
 _ERRORS = ['BadInput()', 'ChannelExists()', 'UnknownChannel()', 'ChannelClosed()', 'NotPayee()', 'NotPayer()',
-           'NotPayerOrSigner()', 'BadSignature()', 'NothingToSettle()', 'CloseNotRequested()', 'CloseNotReady()',
+           'NotPayerOrSigner()', 'NotPayerOrPayee()', 'BadSignature()', 'NothingToSettle()', 'CloseNotRequested()', 'CloseNotReady()',
            'UnsupportedToken()', 'SafeERC20FailedOperation(address)', 'Locked()',
            'ERC20InsufficientBalance(address,uint256,uint256)', 'ERC20InsufficientAllowance(address,uint256,uint256)',
            'HookFailedWithoutReason()']
@@ -304,18 +311,22 @@ class PaymentChannels:
         return self.client.latest_timestamp()
 
     def read_channel(self, channel_id):
-        """A channel as the contract holds it (amounts int wei, times unix seconds), or None for an id never opened."""
+        """A channel as the contract holds it (amounts int wei, times unix seconds), or None for an id never opened.
+        `grace` is its grace period (seconds) and `payout` where its settlements are paid (the payee unless it
+        named another)."""
         try:
-            payer, deposit, payee, settled, token, asked, closed, signer = self.contract.functions.getChannel(
-                _b32(channel_id)).call()
+            fns = self.contract.functions
+            payer, deposit, payee, settled, token, asked, closed, signer = fns.getChannel(_b32(channel_id)).call()
+            if int(payer, 16) == 0:
+                return None
+            grace, payout = fns.getTerms(_b32(channel_id)).call()
         except Exception as e:
             raise _plain(e) from e
-        if int(payer, 16) == 0:
-            return None
-        asked = int(asked)
+        asked, grace = int(asked), int(grace)
         return {'id': channel_id, 'payer': payer, 'payee': payee, 'token': token, 'signer': signer,
                 'deposit': int(deposit), 'settled': int(settled), 'close_requested_at': asked or None,
-                'closed': bool(closed), 'grace_ends_at': asked + CLOSE_GRACE_S if asked else None}
+                'closed': bool(closed), 'grace': grace, 'payout': payout,
+                'grace_ends_at': asked + grace if asked else None}
 
     def _lock_state(self, wallet):
         t = self._erc20()
@@ -412,7 +423,8 @@ class PaymentChannels:
             raise _plain(e) from e
 
     def request_close(self, alias_key, channel_id) -> str:
-        """The alias starts the 7-day grace period; asking again doesn't restart it."""
+        """The alias starts the channel's grace period (7 days unless a side changed it); asking again doesn't
+        restart it."""
         try:
             return self.client.send(self.contract.functions.requestClose(_b32(channel_id)),
                                     private_key=alias_key, gas_pad=HOOK_GAS)

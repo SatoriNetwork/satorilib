@@ -1,13 +1,14 @@
-"""The paid-stream channel on a local anvil fork of Base Sepolia, against the
-deployed PaymentChannels and SATORI, with throwaway keys: the buyer's wallet
+"""The paid-stream channel on a local anvil fork of Base, against the deployed
+PaymentChannels v3 and SATORI, with throwaway keys: the buyer's wallet
 opens a channel (one openWithPermit), its alias signs vouchers, the
 seller's alias settles them with settleMany into the seller's wallet, the
 buyer's alias asks to close and, after the 7-day grace period, withdraws
 the rest back to the wallet.
 
 Never a public chain: runs only when SATORI_FORK_RPC names a local fork, e.g.
-    node Satori/satori/scripts/fork.mjs start --port 8559
+    anvil --fork-url https://mainnet.base.org --port 8559
     SATORI_FORK_RPC=http://127.0.0.1:8559 pytest tests/test_channels_fork.py
+SATORI is minted on the fork by the token's airdrop contract, impersonated: no one's SATORI moves.
 Everything is undone at the end (evm_snapshot / evm_revert), clock included.
 """
 import os
@@ -20,8 +21,8 @@ pytestmark = pytest.mark.skipif(
     not RPC or urlparse(RPC).hostname not in ('127.0.0.1', 'localhost'),
     reason='needs a local fork: SATORI_FORK_RPC=http://127.0.0.1:<port>')
 
-TOKEN = '0x4dee947383d5C9c8E421F55Fe3518a29324aE469'
-DEPLOYER = '0x9d3109b8A045D63056Aa5C1d2c883F3F9fA18817'  # holds SATORI on Base Sepolia (Satori/satori scripts/fork.mjs)
+CHAIN = 8453
+TOKEN = '0xd0a5bFF2789230b0fb1Bd989fc7CE7084c947E17'  # SATORI on Base (Lite's base_config)
 SATORI = 10 ** 18
 
 
@@ -31,7 +32,7 @@ def fork():
     from satorilib.chain.evm import EvmClient
     client = EvmClient(RPC)
     w3 = client.w3
-    assert w3.eth.chain_id == 84532, 'not a fork of Base Sepolia'
+    assert w3.eth.chain_id == CHAIN, 'not a fork of Base'
     snap = w3.provider.make_request('evm_snapshot', [])['result']
     try:
         yield client
@@ -40,21 +41,22 @@ def fork():
 
 
 def _fund(client, address, eth=10 ** 17, satori=0):
-    from satorilib.chain.channels import HOOK_GAS, TOKEN_ABI
     w3 = client.w3
     w3.provider.make_request('anvil_setBalance', [address, hex(eth)])
     if not satori:
         return
-    w3.provider.make_request('anvil_impersonateAccount', [DEPLOYER])
-    w3.provider.make_request('anvil_setBalance', [DEPLOYER, hex(10 * SATORI)])
-    abi = TOKEN_ABI + [{'name': 'transfer', 'type': 'function', 'stateMutability': 'nonpayable',
-                        'inputs': [{'name': 'to', 'type': 'address'}, {'name': 'value', 'type': 'uint256'}],
-                        'outputs': [{'name': '', 'type': 'bool'}]}]
+    abi = [{'name': 'airdrop', 'type': 'function', 'stateMutability': 'view', 'inputs': [],
+            'outputs': [{'name': '', 'type': 'address'}]},
+           {'name': 'airdropMint', 'type': 'function', 'stateMutability': 'nonpayable',
+            'inputs': [{'name': 'to', 'type': 'address'}, {'name': 'amount', 'type': 'uint256'}], 'outputs': []}]
     token = w3.eth.contract(address=TOKEN, abi=abi)
-    fn = token.functions.transfer(address, satori)
-    gas = fn.estimate_gas({'from': DEPLOYER}) + HOOK_GAS
-    h = fn.transact({'from': DEPLOYER, 'gas': gas})
+    minter = token.functions.airdrop().call()  # SatoriAirdrop: the token's only airdropMint caller
+    w3.provider.make_request('anvil_impersonateAccount', [minter])
+    w3.provider.make_request('anvil_setBalance', [minter, hex(10 ** 18)])
+    h = token.functions.airdropMint(address, satori).transact({'from': minter, 'gas': 1_000_000})
     assert w3.eth.wait_for_transaction_receipt(h).status == 1
+    w3.provider.make_request('anvil_stopImpersonatingAccount', [minter])
+    assert _balance(client, address) == satori
 
 
 def _balance(client, address):
@@ -71,7 +73,7 @@ def test_open_voucher_settle_close_withdraw_on_the_fork(fork):
     keys = {k: Account.create() for k in ('buyer_wallet', 'buyer_id', 'seller_wallet', 'seller_id')}
     for k, a in keys.items():
         _fund(fork, a.address, satori=5 * SATORI if k == 'buyer_wallet' else 0)
-    chans = PaymentChannels(fork, 84532, TOKEN)
+    chans = PaymentChannels(fork, CHAIN, TOKEN)
     price = 10 ** 15  # 0.001 SATORI
     deposit = 100 * price
 
@@ -83,12 +85,13 @@ def test_open_voucher_settle_close_withdraw_on_the_fork(fork):
     assert (ch['payer'], ch['payee'], ch['signer'], ch['deposit'], ch['settled']) == (
         keys['buyer_wallet'].address, keys['seller_wallet'].address, keys['buyer_id'].address, deposit, 0)
     assert ch['token'].lower() == TOKEN.lower() and not ch['closed'] and ch['close_requested_at'] is None
+    assert (ch['grace'], ch['payout']) == (CLOSE_GRACE_S, keys['seller_wallet'].address)  # v3's getTerms, unchanged
     binding = sign_binding(keys['buyer_id'].key.to_0x_hex(), r['id'], '6' * 64)
     assert binding_signer(r['id'], '6' * 64, binding) == ch['signer']
 
     # the alias signs a voucher per observation; the seller checks each against the channel's signer
-    vouchers = [sign_voucher(keys['buyer_id'].key.to_0x_hex(), 84532, r['id'], n * price) for n in range(1, 4)]
-    assert all(verify_voucher(ch['signer'], v, 84532, r['id'], (n + 1) * price) for n, v in enumerate(vouchers))
+    vouchers = [sign_voucher(keys['buyer_id'].key.to_0x_hex(), CHAIN, r['id'], n * price) for n in range(1, 4)]
+    assert all(verify_voucher(ch['signer'], v, CHAIN, r['id'], (n + 1) * price) for n, v in enumerate(vouchers))
 
     # the seller's alias settles the newest with settleMany, into the seller's wallet
     s = chans.settle_many(keys['seller_id'].key.to_0x_hex(), [{'id': r['id'], 'cumulative': 3 * price,
@@ -104,7 +107,7 @@ def test_open_voucher_settle_close_withdraw_on_the_fork(fork):
     chans.request_close(keys['buyer_id'].key.to_0x_hex(), r['id'])
     ch = chans.read_channel(r['id'])
     assert ch['close_requested_at'] and ch['grace_ends_at'] == ch['close_requested_at'] + CLOSE_GRACE_S
-    with pytest.raises(ChannelError, match="The 7-day grace period after the close request hasn't ended yet."):
+    with pytest.raises(ChannelError, match="The waiting period after the close request hasn't ended yet."):
         chans.withdraw(keys['buyer_id'].key.to_0x_hex(), r['id'])
 
     # 8 days on: the alias withdraws, the rest goes back to the wallet (the payer)
@@ -115,7 +118,7 @@ def test_open_voucher_settle_close_withdraw_on_the_fork(fork):
     assert _balance(fork, keys['buyer_wallet'].address) == 5 * SATORI - 3 * price
 
 
-HUB = '0x1eec7E1443C1065ab78180A14326e5Ac8284f143'  # SatoriHub on Base Sepolia (Lite's base_config)
+HUB = '0x195083eE270ad89459e8dbF2d40fDFc85fb21327'  # SatoriHub on Base (Lite's base_config)
 
 
 def test_a_staked_wallet_cant_fund_a_channel_said_in_plain_words(fork):
@@ -129,7 +132,7 @@ def test_a_staked_wallet_cant_fund_a_channel_said_in_plain_words(fork):
                                'inputs': [{'name': 'delegate', 'type': 'address'}], 'outputs': []}])
     fork.send(hub.functions.delegatePredictionPower(alias.address), private_key=wallet.key.to_0x_hex(),
               gas_pad=HOOK_GAS)
-    chans = PaymentChannels(fork, 84532, TOKEN)
+    chans = PaymentChannels(fork, CHAIN, TOKEN)
     assert chans._lock_state(wallet.address)[0] == 2 ** 24 - 1
     before = fork.w3.eth.get_transaction_count(wallet.address)
     with pytest.raises(ChannelError, match="Your wallet is staked with this neuron, so it can't send SATORI: "
