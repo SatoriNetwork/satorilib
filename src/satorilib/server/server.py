@@ -419,20 +419,6 @@ class SatoriServerClient(object):
                 'unable to set reward address; try again Later.', e, color='yellow')
             return False, ''
 
-    def stakeCheck(self) -> bool:
-        ''' gets wallet stats '''
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.get,
-                endpoint='/stake/check')
-            if response.text == 'TRUE':
-                return True
-        except Exception as e:
-            logging.warning(
-                'unable to check stake due to connection timeout; try again Later.', e, color='yellow')
-            return False
-        return False
-
     def publish(
         self,
         topic: str,
@@ -626,39 +612,3 @@ class SatoriServerClient(object):
                 f"Error occurred while fetching observations batch: {str(e)}",
                 color='red')
             return None
-
-    def poolAccepting(self, status: bool) -> tuple[bool, dict]:
-        """
-        Function to set the pool status to accepting or not accepting
-        """
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.get,
-                endpoint='/stake/lend/enable' if status else '/stake/lend/disable')
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in poolAccepting: {str(e)}"
-            return False, {"error": error_message}
-
-    ## untested ##
-
-    def setMiningMode(self, status: bool) -> tuple[bool, dict]:
-        """
-        Function to set the worker mining mode
-        """
-        try:
-            response = self._makeAuthenticatedCall(
-                function=requests.get,
-                endpoint='/worker/mining/mode/enable' if status else '/worker/mining/mode/disable')
-            if response.status_code == 200:
-                return True, response.text
-            else:
-                error_message = f"Server returned status code {response.status_code}: {response.text}"
-                return False, {"error": error_message}
-        except Exception as e:
-            error_message = f"Error in setMiningMode: {str(e)}"
-            return False, {"error": error_message}
