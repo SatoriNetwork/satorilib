@@ -41,8 +41,7 @@ subpackages so that downstream applications can pull in only what they need.
   related domain objects shared across the network.
 - **Datastream pub/sub over Nostr** (`satorilib.satori_nostr`)
   End-to-end encrypted datastream announcement, subscription, payment, and
-  delivery primitives built on Nostr, including production-ready
-  reliability integrations.
+  delivery primitives built on Nostr.
 - **Additional transports**
   Centrifugo client (`satorilib.centrifugo`), websockets, ZeroMQ, FTP,
   gossip, IPFS, and a generic pubsub layer.

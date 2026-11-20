@@ -324,36 +324,6 @@ class TestSubscriberAPIs:
             await subscriber.stop()
 
     @pytest.mark.asyncio
-    async def test_get_datastream(self, provider_keys, subscriber_keys, relay_url):
-        provider = SatoriNostr(make_config(provider_keys, relay_url))
-        subscriber = SatoriNostr(make_config(subscriber_keys, relay_url))
-        await provider.start()
-        await subscriber.start()
-        try:
-            stream_name = f"lookup-test-{int(time.time())}"
-            metadata = make_free_metadata(provider_keys, stream_name=stream_name)
-            await provider.announce_datastream(metadata)
-            await asyncio.sleep(0.5)
-
-            result = await subscriber.get_datastream(stream_name)
-            assert result is not None
-            assert result.stream_name == stream_name
-            assert result.name == "Test Stream"
-        finally:
-            await provider.stop()
-            await subscriber.stop()
-
-    @pytest.mark.asyncio
-    async def test_get_datastream_not_found(self, subscriber_keys, relay_url):
-        subscriber = SatoriNostr(make_config(subscriber_keys, relay_url))
-        await subscriber.start()
-        try:
-            result = await subscriber.get_datastream("nonexistent-stream-xyz")
-            assert result is None
-        finally:
-            await subscriber.stop()
-
-    @pytest.mark.asyncio
     async def test_discover_not_running_raises(self, subscriber_keys, relay_url):
         subscriber = SatoriNostr(make_config(subscriber_keys, relay_url))
         with pytest.raises(RuntimeError):
@@ -433,22 +403,18 @@ class TestNotRunningGuards:
             await client.send_payment("aa" * 32, "s", seq_num=1, amount_sats=10)
 
     @pytest.mark.asyncio
-    async def test_get_datastream_not_running(self, subscriber_keys, relay_url):
+    async def test_lookups_not_running(self, subscriber_keys, relay_url):
         client = SatoriNostr(make_config(subscriber_keys, relay_url))
         with pytest.raises(RuntimeError):
-            await client.get_datastream("x")
+            await client.find_datastreams([("aa" * 32, "x")])
+        with pytest.raises(RuntimeError):
+            await client.get_last_observation_events([("aa" * 32, "x")])
 
     @pytest.mark.asyncio
     async def test_unsubscribe_not_running(self, subscriber_keys, relay_url):
         client = SatoriNostr(make_config(subscriber_keys, relay_url))
         with pytest.raises(RuntimeError):
             await client.unsubscribe_datastream("x", "aa" * 32)
-
-    @pytest.mark.asyncio
-    async def test_get_last_observation_time_not_running(self, subscriber_keys, relay_url):
-        client = SatoriNostr(make_config(subscriber_keys, relay_url))
-        with pytest.raises(RuntimeError):
-            await client.get_last_observation_time("x")
 
 
 # =========================================================================
@@ -501,58 +467,7 @@ class TestTagDiscovery:
 
 
 # =========================================================================
-# 10. Active datastream discovery
-# =========================================================================
-
-class TestActiveDiscovery:
-    @pytest.mark.asyncio
-    async def test_discover_active_with_recent_obs(self, provider_keys, subscriber_keys, relay_url):
-        """Stream with recent observation should be discovered as active."""
-        provider = SatoriNostr(make_config(provider_keys, relay_url))
-        subscriber = SatoriNostr(make_config(subscriber_keys, relay_url))
-        await provider.start()
-        await subscriber.start()
-        try:
-            stream_name = f"active-disc-{int(time.time())}"
-            metadata = make_free_metadata(
-                provider_keys, stream_name=stream_name, cadence_seconds=3600)
-            await provider.announce_datastream(metadata)
-
-            obs = make_observation(stream_name=stream_name)
-            await provider.publish_observation(obs, metadata)
-            await asyncio.sleep(0.5)
-
-            active = await subscriber.discover_active_datastreams()
-            names = [s.stream_name for s in active]
-            assert stream_name in names
-        finally:
-            await provider.stop()
-            await subscriber.stop()
-
-    @pytest.mark.asyncio
-    async def test_discover_active_no_obs_excluded(self, provider_keys, subscriber_keys, relay_url):
-        """Stream with no observations should NOT appear in active discovery."""
-        provider = SatoriNostr(make_config(provider_keys, relay_url))
-        subscriber = SatoriNostr(make_config(subscriber_keys, relay_url))
-        await provider.start()
-        await subscriber.start()
-        try:
-            stream_name = f"inactive-disc-{int(time.time())}"
-            metadata = make_free_metadata(
-                provider_keys, stream_name=stream_name)
-            await provider.announce_datastream(metadata)
-            await asyncio.sleep(0.5)
-
-            active = await subscriber.discover_active_datastreams()
-            names = [s.stream_name for s in active]
-            assert stream_name not in names
-        finally:
-            await provider.stop()
-            await subscriber.stop()
-
-
-# =========================================================================
-# 11. Payment event handling (E2E)
+# 10. Payment event handling (E2E)
 # =========================================================================
 
 class TestPaymentE2E:
@@ -615,7 +530,7 @@ class TestPaymentE2E:
 
 
 # =========================================================================
-# 12. Subscription event handling (provider receives subscription)
+# 11. Subscription event handling (provider receives subscription)
 # =========================================================================
 
 class TestSubscriptionEventE2E:
@@ -715,7 +630,7 @@ class TestSubscriptionEventE2E:
 
 
 # =========================================================================
-# 13. Observations iterator timeout (coverage for L674,681)
+# 12. Observations iterator timeout (coverage for L674,681)
 # =========================================================================
 
 class TestObservationsIterator:
@@ -751,7 +666,7 @@ class TestObservationsIterator:
 
 
 # =========================================================================
-# 14. Payments iterator (coverage for L692-700)
+# 13. Payments iterator (coverage for L692-700)
 # =========================================================================
 
 class TestPaymentsIterator:

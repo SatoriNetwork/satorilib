@@ -752,40 +752,6 @@ class SatoriNostr:
 
         return datastreams
 
-    async def get_last_observation(self, stream_name: str) -> InboundObservation | None:
-        """Get the latest observation for a stream from the relay.
-
-        Queries relays for the most recent observation event (kind 34601)
-        using the d-tag (stream_name). Returns the full parsed observation
-        so callers can save it and process it like any other received observation.
-
-        Args:
-            stream_name: Stream identifier
-
-        Returns:
-            InboundObservation or None if no observations found
-
-        Raises:
-            RuntimeError: If client not running
-        """
-        if not self._running or not self._client:
-            raise RuntimeError("Client not running")
-
-        # Query for latest observation by d-tag (stream_name)
-        filter_builder = (
-            Filter()
-            .kind(Kind(KIND_DATASTREAM_DATA))
-            .identifier(stream_name)
-            .limit(1)
-        )
-
-        events = await self._client.fetch_events(
-            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
-
-        if not events:
-            return None
-        return self.parse_observation_event(events[0])
-
     def parse_observation_event(self, event: Event) -> InboundObservation | None:
         """Parse a kind 34601 event fetched from a relay.
 
@@ -880,95 +846,6 @@ class SatoriNostr:
             except Exception as e:
                 print(f"Error parsing datastream metadata: {e}")
         return found
-
-    async def get_last_observation_time(self, stream_name: str) -> int | None:
-        """Get timestamp of the last published observation for a stream.
-
-        Convenience wrapper around get_last_observation() for freshness checks.
-        """
-        obs = await self.get_last_observation(stream_name)
-        if obs and obs.observation:
-            return obs.observation.timestamp
-        return None
-
-    async def get_last_observation_event_time(
-        self, stream_name: str
-    ) -> int | None:
-        """Get the nostr event timestamp of the last observation event.
-
-        Reads only the public event header (created_at) — no decryption is
-        attempted. This means freshness can be inferred for paid streams as
-        well as free ones, as long as at least one observation event exists
-        on the relay (i.e. the publisher has at least one paying subscriber
-        for paid streams).
-
-        Note: this is the relay event timestamp, not the publisher's
-        observation.timestamp. They are typically within seconds of each
-        other but can differ if the publisher backdates observations.
-
-        Args:
-            stream_name: Stream identifier
-
-        Returns:
-            Unix epoch seconds of the most recent observation event, or
-            None if no observation events exist on the relay.
-        """
-        if not self._running or not self._client:
-            raise RuntimeError("Client not running")
-        filter_builder = (
-            Filter()
-            .kind(Kind(KIND_DATASTREAM_DATA))
-            .identifier(stream_name)
-            .limit(1)
-        )
-        events = await self._client.fetch_events(
-            ReqTarget.auto([filter_builder]), timedelta(seconds=10))
-        if not events:
-            return None
-        try:
-            return events[0].created_at().as_secs()
-        except Exception:
-            return None
-
-    async def discover_active_datastreams(
-        self,
-        tags: list[str] | None = None,
-        limit: int = 100,
-        max_staleness_multiplier: float = 2.0
-    ) -> list[DatastreamMetadata]:
-        """Discover datastreams that are likely still active (subscriber).
-
-        Queries relays for latest observation timestamps and filters based on cadence.
-
-        Args:
-            tags: Optional list of tags to filter by
-            limit: Maximum number of results
-            max_staleness_multiplier: How many cadence periods before considering stale
-
-        Returns:
-            List of datastream metadata that appear to be actively publishing
-
-        Raises:
-            RuntimeError: If client not running
-
-        Example:
-            >>> # Find active Bitcoin streams
-            >>> active = await client.discover_active_datastreams(tags=["bitcoin"])
-            >>> for stream in active:
-            ...     last_time = await client.get_last_observation_time(stream.stream_name)
-            ...     print(f"{stream.name}: last observation at {last_time}")
-        """
-        # Get all matching streams
-        all_streams = await self.discover_datastreams(tags=tags, limit=limit)
-
-        # Filter to only active streams by checking last observation time
-        active_streams = []
-        for stream in all_streams:
-            last_obs_time = await self.get_last_observation_time(stream.stream_name)
-            if last_obs_time and stream.is_likely_active(last_obs_time, max_staleness_multiplier):
-                active_streams.append(stream)
-
-        return active_streams
 
     async def subscribe_datastream(
         self,
@@ -1454,37 +1331,6 @@ class SatoriNostr:
     # ========================================================================
     # UTILITY APIs
     # ========================================================================
-
-    async def get_datastream(self, stream_name: str) -> DatastreamMetadata | None:
-        """Get metadata for a specific datastream by ID.
-
-        Args:
-            stream_name: Stream identifier to look up
-
-        Returns:
-            DatastreamMetadata if found, None otherwise
-
-        Raises:
-            RuntimeError: If client not running
-        """
-        if not self._running or not self._client:
-            raise RuntimeError("Client not running")
-
-        # Query for this specific stream (d-tag is the replaceable event identifier)
-        filter_obj = Filter().kind(Kind(KIND_DATASTREAM_ANNOUNCE)).identifier(stream_name)
-
-        events = await self._client.fetch_events(
-            ReqTarget.auto([filter_obj]), timedelta(seconds=10))
-
-        if events:
-            try:
-                # Return the most recent announcement
-                latest_event = max(events, key=lambda e: e.created_at())
-                return DatastreamMetadata.from_json(latest_event.content())
-            except Exception as e:
-                print(f"Error parsing datastream metadata: {e}")
-
-        return None
 
     def list_announced_streams(self) -> list[DatastreamMetadata]:
         """List all datastreams announced by this client.
