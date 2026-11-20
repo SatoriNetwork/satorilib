@@ -42,18 +42,11 @@ subpackages so that downstream applications can pull in only what they need.
 - **Datastream pub/sub over Nostr** (`satorilib.satori_nostr`)
   End-to-end encrypted datastream announcement, subscription, payment, and
   delivery primitives built on Nostr.
-- **Additional transports**
-  Centrifugo client (`satorilib.centrifugo`), websockets, ZeroMQ, FTP,
-  gossip, IPFS, and a generic pubsub layer.
-- **Payment channels** (`satorilib.payment_channel`)
-  Building blocks for off-chain micropayment flows.
 - **Persistence and I/O** (`satorilib.disk`, `satorilib.sqlite`)
   File and cache helpers and SQLite utilities used across components.
-- **Asynchronous helpers** (`satorilib.asynchronous`)
-  Thread, task, and event-loop utilities used by long-running services.
 - **Electrum and RPC clients** (`satorilib.electrumx`, `satorilib.rpc`)
   Lightweight clients for blockchain node interaction.
-- **Validation, logging, configuration, utilities**
+- **Logging, configuration, utilities**
   Cross-cutting helpers used by the rest of the library.
 
 ## Installation
@@ -101,30 +94,19 @@ from satorilib.satori_nostr import SatoriNostr, SatoriNostrConfig
 
 ```
 src/satorilib/
-  asynchronous/      Thread and async helpers
-  centrifugo/        Centrifugo client
   concepts/          Stream, observation, and identifier types
   config/            Configuration helpers
-  datamanager/       Data acquisition and management primitives
   disk/              Filesystem and cache utilities
   electrumx/         ElectrumX client
-  experimental/      Experimental modules (unstable APIs)
-  ftp/, ipfs/        Optional transport backends
-  gossip/            Gossip-style messaging primitives
   interfaces/        Shared interface definitions
   logging/           Logging configuration
-  payment_channel/   Off-chain payment channel primitives
-  pubsub/            Generic publish/subscribe layer
   relay/             Relay support utilities
   rpc/               JSON-RPC client helpers
   satori_nostr/      Datastream pub/sub and micropayments over Nostr
   server/            Satori central-server client
   sqlite/            SQLite helpers
   utils/             Cross-cutting utilities
-  validate/          Validation helpers
   wallet/            Multi-chain wallet stack (Evrmore, Ravencoin, Ethereum)
-  websockets/        WebSocket transport
-  zeromq/            ZeroMQ transport
 ```
 
 ## Testing

@@ -23,13 +23,13 @@ authors = [
 # `handle_notifications` were removed, `subscribe`/`fetch_events` take a
 # ReqTarget, and `Tag.as_vec` became `to_vec`.
 #
-# Only what satori_nostr needs is listed. Other subpackages (electrumx,
-# centrifugo, datamanager) have their own imports and remain undeclared; that is
-# the same latent problem, one subpackage at a time.
+# Only what satori_nostr needs is listed. Other subpackages (electrumx) have
+# their own imports and remain undeclared; that is the same latent problem, one
+# subpackage at a time.
 dependencies = [
     "nostr-sdk>=0.45.0",
     "pycryptodome>=3.20",   # satorilib.utils.secret (Crypto.Cipher)
-    "websockets>=12",
+    "websockets>=12",       # tests/mini_relay.py, the suite's relay
 ]
 
 [tool.setuptools]
