@@ -6,7 +6,6 @@ Covers: lifecycle, subscribe/unsubscribe, stream discovery,
 import asyncio
 import time
 import pytest
-import pytest_asyncio
 
 from nostr_sdk import Keys
 
@@ -21,7 +20,6 @@ from satorilib.satori_nostr.integrations.reliable_subscriber import (
     SubscriptionConfig,
 )
 from satorilib.satori_nostr.integrations.stream_monitor import StreamHealth
-from tests.mini_relay import MiniRelay
 
 
 # =========================================================================
@@ -43,15 +41,6 @@ def make_metadata(provider_keys, stream_name="test-stream", **overrides):
     )
     defaults.update(overrides)
     return DatastreamMetadata(**defaults)
-
-
-@pytest_asyncio.fixture
-async def relay():
-    """Provide a running mini relay."""
-    r = MiniRelay()
-    await r.start()
-    yield r
-    await r.stop()
 
 
 # =========================================================================

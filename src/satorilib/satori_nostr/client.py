@@ -153,6 +153,9 @@ class SatoriNostr:
         # Track announced streams (for providers)
         self._announced_streams: dict[str, DatastreamMetadata] = {}
 
+        # The created_at of our last event to each (kind, d); see _sign().
+        self._slot_stamps: dict[tuple[int, str], int] = {}
+
         # Event queues for async iteration
         self._observation_queue: asyncio.Queue[InboundObservation] = asyncio.Queue()
         self._payment_queue: asyncio.Queue[InboundPayment] = asyncio.Queue()
@@ -190,21 +193,40 @@ class SatoriNostr:
         """
         return self._keys.public_key().to_hex()
 
+    def _sign(self, builder: EventBuilder) -> Event:
+        """Sign an EventBuilder with our keys: the one place signing happens.
+
+        A relay keeps the latest event a (kind, author, d) and, of two with
+        one created_at, the lower id (NIP-01). So an addressable event is
+        stamped later than our last to its slot: the one we sent last is the
+        one a relay keeps, however soon after the other.
+        """
+        author = self._keys.public_key()
+        unsigned = builder.finalize_unsigned(author)
+        kind = unsigned.kind().as_u16()
+        if 30000 <= kind < 40000:
+            slot = (kind, _d_tag(unsigned))
+            now = unsigned.created_at().as_secs()
+            stamp = max(now, self._slot_stamps.get(slot, 0) + 1)
+            self._slot_stamps[slot] = stamp
+            if stamp != now:
+                unsigned = builder.custom_created_at(
+                    Timestamp.from_secs(stamp)).finalize_unsigned(author)
+        return self._keys.sign_event(unsigned)
+
     async def _send_builder(self, builder: EventBuilder) -> Event:
         """Sign an EventBuilder with our keys and publish it.
 
-        The one place signing happens. nostr-sdk 0.45 removed
-        `Client.send_event_builder`, which used to do build-sign-send in one
-        step using a signer held by the client. The client no longer holds one,
-        so the three steps are explicit here rather than repeated at every call
-        site.
+        nostr-sdk 0.45 removed `Client.send_event_builder`, which used to do
+        build-sign-send in one step using a signer held by the client. The
+        client no longer holds one, so the steps are explicit here rather than
+        repeated at every call site.
 
         Returns the SIGNED EVENT rather than the send result: 0.45's
         `SendEventOutput` exposes no id, and the id is what every caller
         actually wanted.
         """
-        unsigned = builder.finalize_unsigned(self._keys.public_key())
-        signed = self._keys.sign_event(unsigned)
+        signed = self._sign(builder)
         await self._client.send_event(signed)
         return signed
 
@@ -641,8 +663,7 @@ class SatoriNostr:
         ]
         builder = EventBuilder(
             Kind(KIND_DATASTREAM_DATA), encrypted_value).tags(tags)
-        signed = self._keys.sign_event(
-            builder.finalize_unsigned(self._keys.public_key()))
+        signed = self._sign(builder)
         output = await self._client.send_event(signed)
         if not output.success:
             return None

@@ -12,12 +12,17 @@ from tests.mini_relay import MiniRelay
 
 
 @pytest_asyncio.fixture
-async def relay_url():
-    """Start a fresh mini relay for each test, return its URL."""
+async def relay():
+    """A fresh mini relay for each test: its `events` are what it stores."""
     relay = MiniRelay()
     await relay.start()
-    yield relay.url
+    yield relay
     await relay.stop()
+
+
+@pytest.fixture
+def relay_url(relay):
+    return relay.url
 
 
 @pytest.fixture

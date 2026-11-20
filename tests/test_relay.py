@@ -16,15 +16,6 @@ from tests.mini_relay import MiniRelay
 # =========================================================================
 
 @pytest_asyncio.fixture
-async def relay():
-    """Single mini relay."""
-    r = MiniRelay()
-    await r.start()
-    yield r
-    await r.stop()
-
-
-@pytest_asyncio.fixture
 async def two_relays():
     """Two mini relays for failover tests."""
     r1 = MiniRelay()

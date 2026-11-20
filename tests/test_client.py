@@ -660,6 +660,23 @@ class TestSubscriptionEventE2E:
             await provider.stop()
             await subscriber.stop()
 
+    @pytest.mark.asyncio
+    async def test_the_last_sent_is_the_one_kept(self, provider_keys, subscriber_keys, relay):
+        """A relay keeps the latest event a (kind, author, d) and, of two with
+        one created_at, the lower id. A client's events to one slot are each
+        stamped later than its last: a subscribe and an unsubscribe a moment
+        apart, in either order, leave a relay the later."""
+        subscriber = SatoriNostr(make_config(subscriber_keys, relay.url))
+        await subscriber.start()
+        try:
+            provider = provider_keys.public_key().to_hex()
+            for send in (subscriber.subscribe_datastream,
+                         subscriber.unsubscribe_datastream) * 2:
+                last = await send("a-stream", provider)
+                assert [event["id"] for event in relay.events] == [last]
+        finally:
+            await subscriber.stop()
+
 
 # =========================================================================
 # 13. Observations iterator timeout (coverage for L674,681)

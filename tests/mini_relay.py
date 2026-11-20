@@ -1,7 +1,8 @@
 """Minimal in-process Nostr relay for testing.
 
 Implements just enough of NIP-01 to support the SatoriNostr test suite:
-- EVENT: stores events in memory, pushes to live subscribers
+- EVENT: stores events in memory, pushes to live subscribers; an addressable
+  kind (30000-39999) keeps only the latest a (kind, pubkey, d)
 - REQ: queries stored events by filter, starts live subscription
 - CLOSE: closes subscriptions
 
@@ -94,6 +95,18 @@ class MiniRelay:
         event = msg[1]
         event_id = event.get("id", "")
 
+        # NIP-01: an addressable kind keeps one event a slot, the latest; of
+        # two with one created_at, the lower id. The other is discarded.
+        slot = self._slot(event)
+        held = slot and next(
+            (e for e in self.events if self._slot(e) == slot), None)
+        if held:
+            if self._age(held) <= self._age(event):
+                await websocket.send(json.dumps(
+                    ["OK", event_id, False, "replaced: have newer event"]))
+                return
+            self.events.remove(held)
+
         # Store
         self.events.append(event)
 
@@ -149,6 +162,21 @@ class MiniRelay:
 
         # Send EOSE
         await websocket.send(json.dumps(["EOSE", sub_id]))
+
+    @staticmethod
+    def _slot(event: dict) -> tuple | None:
+        """An addressable event's (kind, pubkey, d), no d an empty one as
+        strfry reads it; None for a kind outside 30000-39999."""
+        if not 30000 <= event.get("kind", 0) < 40000:
+            return None
+        d = next((t[1] for t in event.get("tags", [])
+                  if len(t) >= 2 and t[0] == "d"), "")
+        return event["kind"], event["pubkey"], d
+
+    @staticmethod
+    def _age(event: dict) -> tuple:
+        """Sorts the event a slot keeps first: the latest, then the lower id."""
+        return -event["created_at"], event["id"]
 
     def _matches_any_filter(self, event: dict, filters: list[dict]) -> bool:
         return any(self._matches_filter(event, f) for f in filters)
