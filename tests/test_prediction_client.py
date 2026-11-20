@@ -56,6 +56,31 @@ class TestSubmitPrediction:
                 predictor_alias_pubkey='predictor_wallet_01',
             )
 
+    @pytest.mark.asyncio
+    async def test_a_slot_a_bounty(self, provider_keys, relay):
+        """A relay keeps one prediction a (predictor, d). Each bounty is a
+        slot: a predictor's to two hosts are both kept, whatever second they
+        are sent in, and its next to a host takes the place of its last."""
+        predictor = SatoriNostr(make_config(Keys.generate(), relay.url))
+        hosts = [Keys.generate().public_key().to_hex() for _ in range(2)]
+        await predictor.start()
+        try:
+            for seq_num, host in enumerate(hosts + hosts[:1]):
+                await predictor.submit_prediction(
+                    stream_name='btc-price-usd',
+                    stream_provider_pubkey=provider_keys.public_key().to_hex(),
+                    host_pubkey=host,
+                    seq_num=seq_num,
+                    predicted_value=1.0,
+                    predictor_alias_pubkey='predictor_wallet_01',
+                )
+            kept = [tag[1] for event in relay.events
+                    if event['kind'] == KIND_PREDICTION
+                    for tag in event['tags'] if tag[0] == 'p']
+            assert sorted(kept) == sorted(hosts)
+        finally:
+            await predictor.stop()
+
 
 class TestIncomingPredictions:
 

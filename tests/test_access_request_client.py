@@ -17,6 +17,28 @@ def make_config(keys: Keys, relay_url: str) -> SatoriNostrConfig:
     )
 
 
+class TestRequestAccess:
+
+    @pytest.mark.asyncio
+    async def test_a_slot_a_stream(self, subscriber_keys, relay):
+        """A relay keeps one request a (requester, d). Each producer's stream
+        is a slot: a requester's for two streams, and for two producers'
+        streams of one name, are all kept, whatever second they are sent in,
+        and asking again takes the place of the first ask."""
+        subscriber = SatoriNostr(make_config(subscriber_keys, relay.url))
+        a, b = (Keys.generate().public_key().to_hex() for _ in range(2))
+        asks = [('gated-stream', a), ('gated-stream', b), ('other-stream', a)]
+        await subscriber.start()
+        try:
+            for stream_name, producer in asks + asks[:1]:
+                await subscriber.request_access(stream_name, producer)
+            kept = [dict(event['tags']) for event in relay.events
+                    if event['kind'] == KIND_ACCESS_REQUEST]
+            assert sorted((tags['s'], tags['p']) for tags in kept) == sorted(asks)
+        finally:
+            await subscriber.stop()
+
+
 class TestIncomingAccessRequests:
 
     @pytest.mark.asyncio

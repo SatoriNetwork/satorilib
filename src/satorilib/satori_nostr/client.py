@@ -541,6 +541,9 @@ class SatoriNostr:
         encrypted = encrypt_json(prediction.to_json(), host_pk, self._keys)
 
         tags = [
+            # The bounty's d: a relay keeps one event a (kind, author, d), so
+            # without one a predictor's predictions to every host share a slot.
+            Tag.parse(["d", f"{stream_name}:{stream_provider_pubkey}:{host_pubkey}"]),
             Tag.parse(["p", host_pubkey]),
             Tag.parse(["s", stream_name]),
             Tag.parse(["provider", stream_provider_pubkey]),
@@ -1059,6 +1062,8 @@ class SatoriNostr:
         encrypted = encrypt_json(req.to_json(), producer_pk, self._keys)
 
         tags = [
+            # A slot a producer's stream, as a prediction has one a bounty.
+            Tag.parse(["d", f"{stream_name}:{producer_pubkey}"]),
             Tag.parse(["p", producer_pubkey]),
             Tag.parse(["s", stream_name]),
             Tag.parse(["satori", "access_request"]),

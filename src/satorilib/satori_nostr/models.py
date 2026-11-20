@@ -557,8 +557,8 @@ KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replacea
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)
 KIND_BOUNTY_ANNOUNCE = 34607        # Bounty announcement (parameterized replaceable, d=stream_name:provider_pubkey:host_pubkey)
-KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host)
-KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams)
+KIND_PREDICTION = 34608             # Prediction submission (encrypted DM from predictor to host; parameterized replaceable, d=its bounty's: a relay keeps a predictor's latest per bounty)
+KIND_ACCESS_REQUEST = 34609         # Access request (encrypted DM from subscriber to producer for approval-gated streams; parameterized replaceable, d=stream_name:producer_pubkey)
 
 
 # Standard cadence values (in seconds)
