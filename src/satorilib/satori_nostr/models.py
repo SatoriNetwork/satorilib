@@ -551,8 +551,8 @@ class InboundAccessRequest:
 # Event kind constants
 KIND_DATASTREAM_ANNOUNCE = 34600    # Datastream metadata announcement (parameterized replaceable, d=stream_name)
 KIND_DATASTREAM_DATA = 34601        # Observation data (parameterized replaceable, d=stream_name; a paid delivery d=stream_name:subscriber)
-KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized replaceable, d=stream_name)
-KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name)
+KIND_SUBSCRIPTION_ANNOUNCE = 34602  # Subscription announcement (parameterized replaceable, d=stream_name:provider_pubkey)
+KIND_PAYMENT = 34603                # Payment notification (parameterized replaceable, d=stream_name:provider_pubkey)
 KIND_CHANNEL_COMMITMENT = 34604     # Channel commitment (parameterized replaceable, d=p2sh_address — relay keeps latest per channel)
 KIND_CHANNEL_OPEN = 34605           # Channel open announcement (parameterized replaceable, d=p2sh_address — informs receiver)
 KIND_CHANNEL_SETTLED = 34606        # Channel settlement notification (parameterized replaceable, d=p2sh_address — informs sender)

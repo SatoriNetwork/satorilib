@@ -1006,7 +1006,9 @@ class SatoriNostr:
 
         # Build tags
         tags = [
-            Tag.parse(["d", stream_name]),  # Replaceable: latest sub state per stream
+            # A slot a provider's stream: a relay keeps one event a (kind,
+            # author, d), and two providers may each have a stream of one name.
+            Tag.parse(["d", f"{stream_name}:{provider_pubkey}"]),
             Tag.parse(["p", provider_pubkey]),  # Tag provider
             Tag.parse(["stream", stream_name]),
             Tag.parse(["satori", "subscription"]),
@@ -1133,7 +1135,8 @@ class SatoriNostr:
 
         # Build tags
         tags = [
-            Tag.parse(["d", stream_name]),  # Replaceable: latest payment per stream
+            # The latest payment to a provider's stream, as its subscription.
+            Tag.parse(["d", f"{stream_name}:{provider_pubkey}"]),
             Tag.parse(["p", provider_pubkey]),
             Tag.parse(["stream", stream_name]),
             Tag.parse(["seq", str(seq_num)]),
@@ -1520,7 +1523,8 @@ class SatoriNostr:
 
         # Build tags with unsubscribe marker
         tags = [
-            Tag.parse(["d", stream_name]),  # Replaces the subscription announcement
+            # Its subscription's d: it takes that one's place at a relay.
+            Tag.parse(["d", f"{stream_name}:{provider_pubkey}"]),
             Tag.parse(["p", provider_pubkey]),
             Tag.parse(["stream", stream_name]),
             Tag.parse(["action", "unsubscribe"]),  # Mark as unsubscribe

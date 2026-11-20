@@ -1,7 +1,6 @@
 """Tests for SatoriNostr client.
 
-Requires local strfry relay at ws://localhost:7777.
-Start with: cd src/satorilib/relay && docker compose up -d
+On the suite's in-process relay (tests/mini_relay.py, conftest's `relay`).
 
 Tests are organized bottom-up:
 1. Construction and key parsing (no relay)
@@ -31,6 +30,7 @@ from satorilib.satori_nostr import (
 )
 from satorilib.satori_nostr.encryption import decrypt_observation, decrypt_payment
 from satorilib.satori_nostr.encryption import encrypt_observation, encrypt_payment
+from satorilib.satori_nostr.models import KIND_PAYMENT, KIND_SUBSCRIPTION_ANNOUNCE
 from tests.mini_relay import MiniRelay
 
 
@@ -674,6 +674,42 @@ class TestSubscriptionEventE2E:
                          subscriber.unsubscribe_datastream) * 2:
                 last = await send("a-stream", provider)
                 assert [event["id"] for event in relay.events] == [last]
+        finally:
+            await subscriber.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_slot_a_providers_stream(self, subscriber_keys, relay):
+        """A relay keeps one event a (kind, author, d). What a subscriber says
+        to a provider about its stream has that provider's stream as its slot:
+        its subscriptions and its payments to two providers' streams of one
+        name are all kept, a later payment takes the place of the one before,
+        and an unsubscribe the place of its own subscription alone."""
+        subscriber = SatoriNostr(make_config(subscriber_keys, relay.url))
+        a, b = (Keys.generate().public_key().to_hex() for _ in range(2))
+        streams = [("x_pred", a), ("x_pred", b), ("y_pred", a)]
+
+        def kept(kind, tag):
+            """Of each event of a kind the relay holds: (stream, provider, the tag)."""
+            return sorted(
+                (tags["stream"], tags["p"], tags[tag])
+                for tags in (dict(event["tags"]) for event in relay.events
+                             if event["kind"] == kind))
+
+        await subscriber.start()
+        try:
+            for stream_name, provider in streams:
+                await subscriber.subscribe_datastream(stream_name, provider)
+                for seq_num in (1, 2):
+                    await subscriber.send_payment(
+                        provider, stream_name, seq_num, amount_sats=10)
+            assert kept(KIND_SUBSCRIPTION_ANNOUNCE, "satori") == sorted(
+                (*stream, "subscription") for stream in streams)
+            assert kept(KIND_PAYMENT, "seq") == sorted(
+                (*stream, "2") for stream in streams)
+            await subscriber.unsubscribe_datastream(*streams[0])
+            assert kept(KIND_SUBSCRIPTION_ANNOUNCE, "satori") == sorted(
+                [(*streams[0], "unsubscription")]
+                + [(*stream, "subscription") for stream in streams[1:]])
         finally:
             await subscriber.stop()
 
