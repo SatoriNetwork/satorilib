@@ -7,10 +7,11 @@ import time
 import pytest
 import pytest_asyncio
 
-from nostr_sdk import Keys
+from nostr_sdk import EventBuilder, Keys, Kind, Tag
 
 from satorilib.satori_nostr import SatoriNostr, SatoriNostrConfig
-from satorilib.satori_nostr.models import PredictionSubmission
+from satorilib.satori_nostr.encryption import encrypt_json
+from satorilib.satori_nostr.models import KIND_PREDICTION, PredictionSubmission
 
 
 def make_config(keys: Keys, relay_url: str) -> SatoriNostrConfig:
@@ -89,6 +90,47 @@ class TestIncomingPredictions:
             assert p.predictor_pubkey == predictor_keys.public_key().to_hex()
         finally:
             await predictor.stop()
+            await host.stop()
+
+    @pytest.mark.asyncio
+    async def test_predictor_is_the_author(self, provider_keys, relay_url):
+        """A prediction that names a key other than its event's author is dropped."""
+        predictor_keys = Keys.generate()
+        host_keys = Keys.generate()
+        predictor = SatoriNostr(make_config(predictor_keys, relay_url))
+        forger = SatoriNostr(make_config(Keys.generate(), relay_url))
+        host = SatoriNostr(make_config(host_keys, relay_url))
+        await predictor.start()
+        await forger.start()
+        await host.start()
+        try:
+            # The forger's, in the predictor's name, stamped later, its own alias to pay
+            forged = PredictionSubmission(
+                stream_name='btc-price-usd',
+                stream_provider_pubkey=provider_keys.public_key().to_hex(),
+                predictor_pubkey=predictor_keys.public_key().to_hex(),
+                predictor_alias_pubkey='forger_wallet',
+                seq_num=42, predicted_value=1.0, timestamp=int(time.time()) + 60)
+            await forger._send_builder(EventBuilder(Kind(KIND_PREDICTION), encrypt_json(
+                forged.to_json(), host_keys.public_key(), forger._keys)).tags(
+                [Tag.parse(["p", host_keys.public_key().to_hex()])]))
+            await predictor.submit_prediction(
+                stream_name='btc-price-usd',
+                stream_provider_pubkey=provider_keys.public_key().to_hex(),
+                host_pubkey=host_keys.public_key().to_hex(),
+                seq_num=42,
+                predicted_value=67450.25,
+                predictor_alias_pubkey='predictor_wallet_01',
+            )
+            async for inbound in host.incoming_predictions():
+                break
+            await asyncio.sleep(0.3)
+            assert inbound.prediction.predicted_value == 67450.25
+            assert inbound.prediction.predictor_alias_pubkey == 'predictor_wallet_01'
+            assert host._prediction_queue.empty()
+        finally:
+            await predictor.stop()
+            await forger.stop()
             await host.stop()
 
     @pytest.mark.asyncio

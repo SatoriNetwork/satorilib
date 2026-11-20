@@ -61,6 +61,8 @@ from .models import (
 )
 from .dedupe import DedupeCache
 from .encryption import (
+    encrypt_json,
+    decrypt_json,
     encrypt_observation,
     decrypt_observation,
     encrypt_payment,
@@ -514,7 +516,6 @@ class SatoriNostr:
         )
 
         host_pk = PublicKey.parse(host_pubkey)
-        from .encryption import encrypt_json
         encrypted = encrypt_json(prediction.to_json(), host_pk, self._keys)
 
         tags = [
@@ -1034,7 +1035,6 @@ class SatoriNostr:
         )
 
         producer_pk = PublicKey.parse(producer_pubkey)
-        from .encryption import encrypt_json
         encrypted = encrypt_json(req.to_json(), producer_pk, self._keys)
 
         tags = [
@@ -1748,10 +1748,12 @@ class SatoriNostr:
         """
         try:
             sender_pubkey = event.author()
-            from .encryption import decrypt_json, EncryptionError as _EncErr
             prediction_json = decrypt_json(
                 event.content(), sender_pubkey, self._keys)
             prediction = PredictionSubmission.from_json(prediction_json)
+            # Only the predictor itself can say what it predicts.
+            if prediction.predictor_pubkey != sender_pubkey.to_hex():
+                return
             inbound = InboundPrediction(
                 prediction=prediction,
                 event_id=event.id().to_hex(),
@@ -1909,10 +1911,12 @@ class SatoriNostr:
         """
         try:
             sender_pubkey = event.author()
-            from .encryption import decrypt_json
             request_json = decrypt_json(
                 event.content(), sender_pubkey, self._keys)
             access_request = AccessRequest.from_json(request_json)
+            # Only the requester itself can ask for its access.
+            if access_request.requester_pubkey != sender_pubkey.to_hex():
+                return
             inbound = InboundAccessRequest(
                 access_request=access_request,
                 event_id=event.id().to_hex(),
