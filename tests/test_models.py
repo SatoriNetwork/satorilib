@@ -103,6 +103,14 @@ class TestDatastreamMetadata:
         assert m2.price_per_obs == m.price_per_obs
         assert m2.tags == m.tags
 
+    def test_from_dict_without_the_optional_fields(self):
+        """An announcement from before approval_required and metadata."""
+        d = make_metadata().to_dict()
+        del d["approval_required"], d["metadata"]
+        m = DatastreamMetadata.from_dict(d)
+        assert m.approval_required is False
+        assert m.metadata is None
+
     def test_to_json_roundtrip(self):
         m = make_metadata(metadata={"source": "coinbase"})
         j = m.to_json()
@@ -130,6 +138,13 @@ class TestDatastreamMetadata:
         m1 = make_metadata(nostr_pubkey="aa" * 32)
         m2 = make_metadata(nostr_pubkey="bb" * 32)
         assert m1.uuid != m2.uuid
+
+    def test_uuid_of_pubkey_and_stream_name_alone(self):
+        m1 = make_metadata()
+        m2 = make_metadata(name="Other", description="Other", encrypted=True, price_per_obs=10,
+                           created_at=1800000000, cadence_seconds=60, tags=["other"],
+                           approval_required=True, metadata={"source": "other"})
+        assert m1.uuid == m2.uuid
 
     def test_uuid_format(self):
         m = make_metadata()
