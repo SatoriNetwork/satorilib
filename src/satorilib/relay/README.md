@@ -1,88 +1,62 @@
 # Satori Nostr Relay
 
-Run a Nostr relay for the Satori Network with NIP-11 identity binding.
+Run a Nostr relay for the Satori Network and earn a share of each day's reward.
 
-## How It Works
-
-This setup runs a [strfry](https://github.com/hoytech/strfry) Nostr relay behind nginx. Nginx serves a NIP-11 document with the `self` field set to your neuron's Nostr public key, binding the relay to your neuron identity.
+This bundle runs a [strfry](https://github.com/hoytech/strfry) relay behind nginx. nginx also serves the relay's NIP-11 document, whose `pubkey` is the Nostr key that rewards are paid to.
 
 ```
-Central Server ──fetch NIP-11──→ nginx ──→ nip11.json (self = your nostr pubkey)
-Nostr Clients  ──WebSocket───→ nginx ──→ strfry relay
+Satori central ──fetch NIP-11──→ nginx ──→ nip11.json (pubkey = your relay key)
+Nostr clients  ──WebSocket────→ nginx ──→ strfry
 ```
 
 ## Setup
 
-1. Copy the example environment file:
+You need a Linux VPS with Docker and a public IP.
+
+1. Pick the relay's key. Any Nostr keypair you hold works: a new one, or your neuron's (Settings, "Run your own relay" shows it). Keep the private key; it is what spends the rewards.
+
+2. Configure and start:
 
 ```bash
-cp .env.example .env
-```
-
-2. Set your neuron's Nostr public key in `.env`:
-
-```
-NOSTR_PUBKEY=a1b2c3d4...  # 64 lowercase hex characters
-```
-
-3. Start the relay:
-
-```bash
+cp .env.example .env      # set NOSTR_PUBKEY (64 lowercase hex characters)
 docker compose up -d
 ```
 
-4. Verify NIP-11 is served correctly:
+3. Check it from another machine:
 
 ```bash
-curl -H "Accept: application/nostr+json" http://localhost:7777
+curl -H "Accept: application/nostr+json" http://YOUR_IP:7777
 ```
 
-You should see:
+You should see your key as `pubkey`.
 
-```json
-{
-  "name": "Satori Relay",
-  "description": "A Satori Network relay",
-  "self": "a1b2c3d4...",
-  ...
-}
-```
+Plain `ws://YOUR_IP:7777` works. For `wss://your-domain`, put Caddy or nginx in front for TLS. The address must be public: central does not connect to private ones.
 
-5. Register your relay URL with the Satori central server via the neuron UI.
+## Getting found
 
-## Reward Eligibility
+There is nothing to register. Central builds its relay list from the relay lists (NIP-65) that registered neurons publish. On a neuron that predicts, open Settings, External Relay Connections, and add your relay URL. A predicting neuron stays connected to every relay it knows, announces its prediction streams there, and lists them in its relay list, which it republishes daily. Central picks the relay up at its next daily reload.
 
-A relay is reward-eligible when:
+## How you are paid
 
-> The relay's NIP-11 `self` field equals the Nostr public key associated with your neuron.
-
-This binds: **Relay → NIP-11 self → Nostr Public Key → Neuron (via Identity Wallet)**
+- Central keeps one connection to each relay it knows. Time counts only while the relay holds at least one Satori stream announcement, and messages count only when written by registered neurons.
+- Every relay connected 20 hours or more on a UTC day shares that day's relay pool (0.1% of the daily off-chain reward pool) equally. Message counts are published in the audit (`https://network.satorinet.io/api/v1/audit/relays/latest`) but do not change the amount today.
+- The reward goes to the Base address of `02 || NOSTR_PUBKEY` (the even-y convention). To spend it, open the Key Normalization Tool on a neuron's Settings page, enter the relay's private key, and import the normalized key into Satori GO, MetaMask or any Base wallet. About half of all keys need this step so the wallet address matches.
 
 ## Configuration
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NOSTR_PUBKEY` | Yes | Your neuron's Nostr public key (64 hex chars) |
+| `NOSTR_PUBKEY` | Yes | The relay's Nostr public key (64 lowercase hex characters); rewards go to its Base address |
 | `RELAY_NAME` | No | Relay display name (default: "Satori Relay") |
 | `RELAY_DESCRIPTION` | No | Relay description |
 | `RELAY_CONTACT` | No | Admin contact (email or URL) |
 | `RELAY_PORT` | No | Port to expose (default: 7777) |
 
-## Production Deployment
-
-For production, put a reverse proxy (Caddy, nginx, etc.) in front to handle SSL:
-
-```
-Internet → Caddy (SSL termination) → this relay (port 7777)
-```
-
-Your relay URL for registration would be `wss://your-domain.com`.
-
 ## Architecture
 
 ```
 docker compose
-├── init       (generates nip11.json from NOSTR_PUBKEY, runs once)
-├── strfry     (Nostr relay, port 7777 internal)
-└── nginx      (reverse proxy, serves NIP-11 + proxies WebSocket)
+├── init       (writes nip11.json from NOSTR_PUBKEY, runs once)
+├── strfry     (the relay, port 7777 inside the compose network)
+└── nginx      (serves NIP-11, proxies the WebSocket, published on RELAY_PORT)
 ```
