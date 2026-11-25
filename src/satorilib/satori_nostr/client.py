@@ -22,6 +22,7 @@ from nostr_sdk import (
     Event,
     SecretKey,
     Timestamp,
+    RelayStatus,
     RelayUrl,
     ReqTarget,
     SingleLetterTag,
@@ -230,6 +231,23 @@ class SatoriNostr:
         await self._client.send_event(signed)
         return signed
 
+    async def _send_public(self, builder: EventBuilder) -> Event | None:
+        """As _send_builder, for the public events (announcement, observation,
+        relay list): None when no relay accepted the event, a relay that is not
+        connected among them. start() does not fail on a relay it cannot
+        reach, so without this a publish to a dead relay read as sent.
+        """
+        signed = self._sign(builder)
+        output = await self._client.send_event(signed)
+        return signed if output.success else None
+
+    async def is_connected(self) -> bool:
+        """True when a relay of this client is connected right now."""
+        if not self._client:
+            return False
+        relays = await self._client.relays()
+        return any(r.status() == RelayStatus.CONNECTED for r in relays.values())
+
     def is_running(self) -> bool:
         """Check if client is currently running.
 
@@ -303,7 +321,7 @@ class SatoriNostr:
     # PROVIDER APIs
     # ========================================================================
 
-    async def announce_datastream(self, metadata: DatastreamMetadata, deleted: bool = False) -> str:
+    async def announce_datastream(self, metadata: DatastreamMetadata, deleted: bool = False) -> str | None:
         """Announce a datastream (provider).
 
         Publishes stream metadata as a kind 34600 event (public, discoverable).
@@ -315,7 +333,7 @@ class SatoriNostr:
             deleted: If True, publish a tombstone (status=deleted) event
 
         Returns:
-            Event ID of the announcement
+            Event ID of the announcement, or None when no relay accepted it
 
         Raises:
             RuntimeError: If client not running
@@ -359,7 +377,9 @@ class SatoriNostr:
         ).tags(tags)
 
         # Publish to relays
-        output = await self._send_builder(builder)
+        output = await self._send_public(builder)
+        if output is None:
+            return None
 
         if not deleted:
             # Track announced stream
@@ -414,7 +434,7 @@ class SatoriNostr:
         """
         return await self.announce_bounty(bounty.close())
 
-    async def publish_relay_list(self, relay_urls: list[str]) -> str:
+    async def publish_relay_list(self, relay_urls: list[str]) -> str | None:
         """Publish a NIP-65 relay list metadata event (kind 10002).
 
         This is a replaceable event — each publication overwrites the
@@ -426,7 +446,7 @@ class SatoriNostr:
             relay_urls: List of relay WebSocket URLs to advertise.
 
         Returns:
-            Event ID of the published relay list event.
+            Event ID of the published relay list event. None when no relay accepted it.
 
         Raises:
             RuntimeError: If client not running.
@@ -437,8 +457,8 @@ class SatoriNostr:
         tags = [Tag.parse(["r", url]) for url in relay_urls]
 
         builder = EventBuilder(Kind(10002), "").tags(tags)
-        output = await self._send_builder(builder)
-        return output.id().to_hex()
+        output = await self._send_public(builder)
+        return output.id().to_hex() if output else None
 
     async def discover_bounties(
         self,
@@ -584,7 +604,7 @@ class SatoriNostr:
             stream_metadata: Metadata about this stream (for pricing info)
 
         Returns:
-            List of event IDs
+            List of event IDs, empty when no relay accepted the event
 
         Raises:
             RuntimeError: If client not running
@@ -618,7 +638,9 @@ class SatoriNostr:
                 content,
             ).tags(tags)
 
-            output = await self._send_builder(builder)
+            output = await self._send_public(builder)
+            if output is None:
+                return []
             event_ids.append(output.id().to_hex())
             self._stats["observations_sent"] += 1
         else:
@@ -632,7 +654,9 @@ class SatoriNostr:
                 Tag.parse(["satori", "heartbeat"]),
             ]
             builder = EventBuilder(Kind(KIND_DATASTREAM_DATA), "").tags(tags)
-            output = await self._send_builder(builder)
+            output = await self._send_public(builder)
+            if output is None:
+                return []
             event_ids.append(output.id().to_hex())
 
         return event_ids
