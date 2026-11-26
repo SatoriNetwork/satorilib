@@ -305,6 +305,11 @@ class SatoriNostrConfig:
     # Optional fields with defaults
     active_relay_timeout_ms: int = 8000  # Failover trigger timeout
     dedupe_db_path: str | None = None    # SQLite path for dedupe (None = in-memory)
+    # False: start() opens no public subscription, so nothing public arrives
+    # until set_followed_streams() or set_followed_authors() says what to
+    # follow. True (the default) follows every public observation on the
+    # relay from the first moment, which a caller then narrows.
+    follow_public: bool = True
 
 
 @dataclass

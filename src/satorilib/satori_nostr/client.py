@@ -170,7 +170,7 @@ class SatoriNostr:
 
         # Authors whose public events (observations, commitment tombstones)
         # this client follows; see set_followed_authors().
-        self._followed_authors: list[str] | None = None
+        self._followed = None
 
         # Statistics
         self._stats = {
@@ -1438,28 +1438,78 @@ class SatoriNostr:
         if not self._running or not self._client:
             raise RuntimeError("Client not running")
         pubkeys = sorted(set(pubkeys))
-        if pubkeys == self._followed_authors:
-            return
-        self._followed_authors = pubkeys
-        try:
-            await self._client.unsubscribe(FOLLOW_SUBSCRIPTION_ID)
-        except Exception:
-            pass  # nothing to close yet
-        if not pubkeys:
-            return
-        filters = [
+        await self._follow(("authors", pubkeys), [
             Filter()
             .kinds([Kind(KIND_DATASTREAM_DATA), Kind(KIND_CHANNEL_COMMITMENT)])
             .authors([PublicKey.parse(p)
                       for p in pubkeys[i:i + FILTER_CHUNK_SIZE]])
             for i in range(0, len(pubkeys), FILTER_CHUNK_SIZE)
+        ])
+
+    async def set_followed_streams(
+        self,
+        streams: list[tuple[str, str]],
+        commitment_authors: list[str] = (),
+    ) -> None:
+        """Follow these streams only: `streams` is (author pubkey, stream
+        name) pairs, and the relay sends their observations (34601,
+        d=stream_name) and nothing else the author publishes. set_followed_authors() gets every stream of an
+        author, which for one with a thousand streams is a thousand values
+        for each one wanted.
+
+        `commitment_authors` are the receivers of channels we fund: their
+        commitment tombstones (34604) carry no `p` tag, so they are followed
+        by author. Replaces the previous set; nothing to follow stops it.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        streams = sorted(set(streams))
+        commitment_authors = sorted(set(commitment_authors))
+        names: dict[str, list[str]] = {}
+        for author, name in streams:
+            names.setdefault(author, []).append(name)
+        filters = [
+            Filter()
+            .kind(Kind(KIND_DATASTREAM_DATA))
+            .authors([PublicKey.parse(author)])
+            .identifiers(chunk[i:i + FILTER_CHUNK_SIZE])
+            for author, chunk in names.items()
+            for i in range(0, len(chunk), FILTER_CHUNK_SIZE)
+        ] + [
+            Filter()
+            .kind(Kind(KIND_CHANNEL_COMMITMENT))
+            .authors([PublicKey.parse(p)
+                      for p in commitment_authors[i:i + FILTER_CHUNK_SIZE]])
+            for i in range(0, len(commitment_authors), FILTER_CHUNK_SIZE)
         ]
-        await self._client.subscribe(
-            ReqTarget.auto(filters), id=FOLLOW_SUBSCRIPTION_ID)
+        if len(filters) > FILTER_CHUNK_SIZE:
+            # More filters than a relay takes in one request (one per
+            # author): follow the authors whole, as before, rather than
+            # have the relay refuse the request and send nothing.
+            await self.set_followed_authors(
+                list(names) + commitment_authors)
+            return
+        await self._follow(("streams", streams, commitment_authors), filters)
+
+    async def _follow(self, followed, filters: list) -> None:
+        """Replace the public subscription, unless it already is `followed`
+        (a new request makes the relay send every stored value again)."""
+        if followed == self._followed:
+            return
+        self._followed = None  # if the request below fails, the next call tries again
+        try:
+            await self._client.unsubscribe(FOLLOW_SUBSCRIPTION_ID)
+        except Exception:
+            pass  # nothing to close yet
+        if filters:
+            await self._client.subscribe(
+                ReqTarget.auto(filters), id=FOLLOW_SUBSCRIPTION_ID)
+        self._followed = followed
 
     async def _subscribe_defaults(self) -> None:
         """Subscribe to Satori events addressed to us, plus (until
-        set_followed_authors() narrows it) all public observations and
+        set_followed_authors() or set_followed_streams() narrows it, and
+        unless config.follow_public is off) all public observations and
         commitment tombstones."""
         # Events addressed to us carry our pubkey in a `p` tag.
         personal_filter = Filter().kinds([
@@ -1480,6 +1530,8 @@ class SatoriNostr:
         # `p` tag. Default: all of them, as before. Callers that know whom
         # they follow should narrow this with set_followed_authors() so the
         # connection doesn't pull the relay's whole observation firehose.
+        if not self.config.follow_public:
+            return
         public_filter = Filter().kinds([
             Kind(KIND_DATASTREAM_DATA),
             Kind(KIND_CHANNEL_COMMITMENT),

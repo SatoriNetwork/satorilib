@@ -302,3 +302,122 @@ class TestFollowedAuthors:
         # Following replays what the relay stored meanwhile, then live
         assert sorted(o.stream_name for o in followed) == [
             "after-follow", "while-cleared"]
+
+
+class TestFollowedStreams:
+    """A neuron asks a relay for the streams it subscribed to, not for
+    everything their author publishes."""
+
+    _drain_observations = TestFollowedAuthors._drain_observations
+
+    async def _send(self, pub, *events):
+        from nostr_sdk import Event
+        for ev in events:
+            await pub._client.send_event(Event.from_json(json.dumps(ev)))
+
+    @pytest.mark.asyncio
+    async def test_only_the_named_streams_of_an_author_arrive(self, capped_relay):
+        a, b = Keys.generate(), Keys.generate()
+        a_hex = a.public_key().to_hex()
+        client = await started_client(capped_relay.url, capped_relay)
+        pub = await started_client(capped_relay.url)
+        try:
+            await client.set_followed_streams([(a_hex, "gold"), (a_hex, "bitcoin")])
+            now = int(time.time())
+            await self._send(
+                pub,
+                observation(a, "gold", now),
+                observation(a, "bitcoin", now),
+                observation(a, "eth", now),   # same author, not followed
+                observation(b, "gold", now))  # same name, another author
+            got = await self._drain_observations(client)
+        finally:
+            await client.stop()
+            await pub.stop()
+        assert sorted((o.nostr_pubkey, o.stream_name) for o in got) == [
+            (a_hex, "bitcoin"), (a_hex, "gold")]
+
+    @pytest.mark.asyncio
+    async def test_a_channel_receivers_tombstone_still_arrives(self, capped_relay):
+        from satorilib.satori_nostr.models import KIND_CHANNEL_COMMITMENT
+        a, receiver, other = Keys.generate(), Keys.generate(), Keys.generate()
+        a_hex = a.public_key().to_hex()
+        client = await started_client(capped_relay.url, capped_relay)
+        pub = await started_client(capped_relay.url)
+        try:
+            await client.set_followed_streams(
+                [(a_hex, "gold")], [receiver.public_key().to_hex()])
+            now = int(time.time())
+            await self._send(
+                pub,
+                observation(a, "gold", now),
+                signed_event(receiver, KIND_CHANNEL_COMMITMENT, "",
+                             [["d", "p2sh_ours"], ["action", "claimed"]], now),
+                signed_event(other, KIND_CHANNEL_COMMITMENT, "",
+                             [["d", "p2sh_other"], ["action", "claimed"]], now))
+            got = await self._drain_observations(client)
+            tombstones = []
+            while not client._tombstone_queue.empty():
+                tombstones.append(client._tombstone_queue.get_nowait())
+        finally:
+            await client.stop()
+            await pub.stop()
+        assert [o.stream_name for o in got] == ["gold"]
+        assert tombstones == ["p2sh_ours"]
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_set_sends_no_new_request(self, capped_relay):
+        a_hex = Keys.generate().public_key().to_hex()
+        client = await started_client(capped_relay.url, capped_relay)
+        try:
+            await client.set_followed_streams([(a_hex, "gold"), (a_hex, "eth")])
+            await asyncio.sleep(0.2)
+            before = capped_relay.req_count
+            await client.set_followed_streams([(a_hex, "eth"), (a_hex, "gold")])
+            await asyncio.sleep(0.2)
+            same = capped_relay.req_count - before
+            await client.set_followed_streams([(a_hex, "gold")])
+            await asyncio.sleep(0.2)
+            changed = capped_relay.req_count - before
+        finally:
+            await client.stop()
+        # A new request makes the relay send every stored value again.
+        assert (same, changed) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_follow_public_off_gets_nothing_until_told_what_to_follow(self, capped_relay):
+        a = Keys.generate()
+        a_hex = a.public_key().to_hex()
+        client = SatoriNostr(SatoriNostrConfig(
+            keys=Keys.generate().secret_key().to_hex(),
+            relay_urls=[capped_relay.url], follow_public=False))
+        await client.start()
+        pub = await started_client(capped_relay.url)
+        try:
+            now = int(time.time())
+            await self._send(pub, observation(a, "gold", now), observation(a, "eth", now))
+            before = await self._drain_observations(client, 0.5)
+            await client.set_followed_streams([(a_hex, "gold")])
+            after = await self._drain_observations(client)
+        finally:
+            await client.stop()
+            await pub.stop()
+        assert before == []
+        # Following sends what the relay holds: the latest value of that stream.
+        assert [o.stream_name for o in after] == ["gold"]
+
+    @pytest.mark.asyncio
+    async def test_more_authors_than_one_request_holds_follows_them_whole(self, capped_relay):
+        authors = [Keys.generate() for _ in range(201)]
+        client = await started_client(capped_relay.url, capped_relay)
+        pub = await started_client(capped_relay.url)
+        try:
+            await client.set_followed_streams(
+                [(k.public_key().to_hex(), "s") for k in authors])
+            now = int(time.time())
+            await self._send(pub, observation(authors[200], "s", now))
+            got = await self._drain_observations(client)
+        finally:
+            await client.stop()
+            await pub.stop()
+        assert [o.stream_name for o in got] == ["s"]
