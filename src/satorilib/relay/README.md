@@ -42,6 +42,14 @@ There is nothing to register. Central builds its relay list from the relay lists
 - Every relay connected 20 hours or more on a UTC day shares that day's relay pool (0.1% of the daily off-chain reward pool) equally. Message counts are published in the audit (`https://network.satorinet.io/api/v1/audit/relays/latest`) but do not change the amount today.
 - The reward goes to the Base address of `02 || NOSTR_PUBKEY` (the even-y convention). To spend it, open the Key Normalization Tool on a neuron's Settings page, enter the relay's private key, and import the normalized key into Satori GO, MetaMask or any Base wallet. About half of all keys need this step so the wallet address matches.
 
+## Capacity
+
+The bundle sets its own connection limits (`nginx.conf`, and `ulimits` in `docker-compose.yml`), so there is nothing to tune. Measured on a 4 core machine: one relay held 40,000 open connections using about 1.4 GB of memory (about 35 KB each). That is connections held open, not traffic. With the stock nginx limits the same machine stopped at about 1,900.
+
+If you put Caddy or nginx in front for TLS, that proxy needs room for the same number of connections (in nginx: `worker_connections` and `worker_rlimit_nofile`).
+
+After changing `strfry.conf` or `.env`, `docker compose up -d --build` is enough: nginx finds the new strfry container by itself.
+
 ## Configuration
 
 | Variable | Required | Description |

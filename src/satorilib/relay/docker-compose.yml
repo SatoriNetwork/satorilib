@@ -4,6 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile.strfry
     restart: unless-stopped
+    # One open file per connected neuron: the default limit on some hosts is 1024.
+    ulimits:
+      nofile: 131072
     volumes:
       - strfry-db:/app/strfry-db
     expose:
@@ -14,6 +17,12 @@ services:
       context: .
       dockerfile: Dockerfile.nginx
     restart: unless-stopped
+    ulimits:
+      nofile: 131072
+    # Every connection to strfry leaves from its own local port: the default
+    # range holds about 28,000.
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     ports:
       - "${RELAY_PORT:-7777}:80"
     volumes:
