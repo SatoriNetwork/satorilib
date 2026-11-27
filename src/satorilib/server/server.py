@@ -332,14 +332,23 @@ class SatoriServerClient(object):
             logging.warning(f'central-lite health check failed in checkinCheck: {e}')
             return True  # failed - trigger restart
 
-    def getRelays(self) -> list[dict]:
-        """Get all verified relays from central server.
+    def getRelays(self, forPubkey: Union[str, None] = None) -> list[dict]:
+        """Get relays from central server.
 
-        Returns list of dicts: {relay_url, nostr_pubkey}
+        Without forPubkey: every relay central has seen traffic on, as
+        {relay_url, nostr_pubkey, address}.
+
+        With forPubkey (this neuron's Nostr public key, hex): this neuron's own
+        list, in the order to take them, each also with `healthy`. The neuron
+        holds the first `keep` of them (getRelayConfig). An empty list means
+        central has no plan for it.
         """
+        endpoint = '/api/v1/peer/relays'
+        if forPubkey:
+            endpoint += f'?for={forPubkey}'
         r = self._makeAuthenticatedCall(
             function=requests.get,
-            endpoint='/api/v1/peer/relays')
+            endpoint=endpoint)
         return r.json()
 
     def getRelayConfig(self) -> dict:
