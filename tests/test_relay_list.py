@@ -27,3 +27,20 @@ def test_with_its_nostr_key_it_asks_for_its_own_list():
     client, asked = _client([])
     assert client.getRelays(forPubkey="ab" * 32) == []
     assert asked == ["/api/v1/peer/relays?for=" + "ab" * 32]
+
+
+def test_relay_config_is_asked_with_the_neurons_key(monkeypatch):
+    from satorilib.server import server
+    asked = []
+
+    def get(url, params=None, timeout=None):
+        asked.append((url, params))
+        return SimpleNamespace(ok=True, json=lambda: {'keep': 2, 'streams': [{'name': 'bitcoin', 'cadence_seconds': 3600}]})
+    monkeypatch.setattr(server.requests, 'get', get)
+    client = SatoriServerClient.__new__(SatoriServerClient)
+    client.url = 'https://central.example'
+    assert client.getRelayConfig(forPubkey='ab' * 32)['streams'][0]['name'] == 'bitcoin'
+    assert client.getRelayConfig() == client.getRelayConfig(forPubkey=None)
+    assert asked == [('https://central.example/api/v1/peer/relay-config', {'for': 'ab' * 32}),
+                     ('https://central.example/api/v1/peer/relay-config', None),
+                     ('https://central.example/api/v1/peer/relay-config', None)]

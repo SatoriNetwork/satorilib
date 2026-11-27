@@ -351,8 +351,12 @@ class SatoriServerClient(object):
             endpoint=endpoint)
         return r.json()
 
-    def getRelayConfig(self) -> dict:
+    def getRelayConfig(self, forPubkey: Union[str, None] = None) -> dict:
         """Get server-driven relay/neuron configuration (e.g. max_streams).
+
+        With forPubkey (this neuron's Nostr public key, hex) the answer also
+        carries `streams`: the streams of central's this neuron is to predict,
+        each {name, cadence_seconds}; None when central has no list for it.
 
         Returns an empty dict if the endpoint is unavailable so callers
         can fall back to local defaults. Does not log the response body
@@ -360,7 +364,10 @@ class SatoriServerClient(object):
         the user should see surfaced and tempted to override locally).
         """
         try:
-            r = requests.get(self.url + '/api/v1/peer/relay-config', timeout=15)
+            r = requests.get(
+                self.url + '/api/v1/peer/relay-config',
+                params={'for': forPubkey} if forPubkey else None,
+                timeout=15)
             if not r.ok:
                 logging.warning(
                     f'relay config fetch failed: status {r.status_code}')
