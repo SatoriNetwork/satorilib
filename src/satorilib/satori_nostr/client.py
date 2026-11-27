@@ -1491,6 +1491,29 @@ class SatoriNostr:
             return
         await self._follow(("streams", streams, commitment_authors), filters)
 
+    async def set_followed_names(
+        self,
+        names: list[str],
+        since: int | None = None,
+    ) -> None:
+        """Follow every author's observations (34601) of streams with these
+        names: for a reader that knows the names and not the authors, as
+        central reading every neuron's `<stream>_pred`. `since` (unix
+        seconds) leaves out the values a relay stored before it. Replaces the
+        previous set; nothing to follow stops it.
+        """
+        if not self._running or not self._client:
+            raise RuntimeError("Client not running")
+        names = sorted(set(names))
+        filters = []
+        for i in range(0, len(names), FILTER_CHUNK_SIZE):
+            f = Filter().kind(Kind(KIND_DATASTREAM_DATA)).identifiers(
+                names[i:i + FILTER_CHUNK_SIZE])
+            if since is not None:
+                f = f.since(Timestamp.from_secs(int(since)))
+            filters.append(f)
+        await self._follow(("names", names, since), filters)
+
     async def _follow(self, followed, filters: list) -> None:
         """Replace the public subscription, unless it already is `followed`
         (a new request makes the relay send every stored value again)."""

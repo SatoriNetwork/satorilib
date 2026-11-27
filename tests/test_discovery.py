@@ -421,3 +421,56 @@ class TestFollowedStreams:
             await client.stop()
             await pub.stop()
         assert [o.stream_name for o in got] == ["s"]
+
+
+class TestFollowedNames:
+    """A reader that knows stream names and not their authors (central
+    reading every neuron's predictions) follows by name."""
+
+    _drain_observations = TestFollowedAuthors._drain_observations
+    _send = TestFollowedStreams._send
+
+    @pytest.mark.asyncio
+    async def test_every_authors_stream_of_a_followed_name_arrives_and_no_other(self, capped_relay):
+        a, b = Keys.generate(), Keys.generate()
+        client = await started_client(capped_relay.url, capped_relay)
+        pub = await started_client(capped_relay.url)
+        try:
+            await client.set_followed_names(["bitcoin_pred", "gold_pred"])
+            now = int(time.time())
+            await self._send(
+                pub,
+                observation(a, "bitcoin_pred", now),
+                observation(b, "bitcoin_pred", now),
+                observation(b, "gold_pred", now),
+                observation(a, "weather_pred", now))   # a name not followed
+            got = await self._drain_observations(client)
+        finally:
+            await client.stop()
+            await pub.stop()
+        assert sorted((o.nostr_pubkey, o.stream_name) for o in got) == sorted([
+            (a.public_key().to_hex(), "bitcoin_pred"),
+            (b.public_key().to_hex(), "bitcoin_pred"),
+            (b.public_key().to_hex(), "gold_pred")])
+
+    @pytest.mark.asyncio
+    async def test_since_leaves_out_what_the_relay_stored_before(self, capped_relay):
+        a, b = Keys.generate(), Keys.generate()
+        # Nothing public is followed until the names are set, as central's collector connects.
+        client = SatoriNostr(SatoriNostrConfig(
+            keys=Keys.generate().secret_key().to_hex(), relay_urls=[capped_relay.url], follow_public=False))
+        await client.start()
+        pub = await started_client(capped_relay.url)
+        try:
+            now = int(time.time())
+            await self._send(
+                pub,
+                observation(a, "bitcoin_pred", now - 7200),   # stored two hours ago
+                observation(b, "bitcoin_pred", now))
+            await asyncio.sleep(0.2)
+            await client.set_followed_names(["bitcoin_pred"], since=now - 3600)
+            got = await self._drain_observations(client)
+        finally:
+            await client.stop()
+            await pub.stop()
+        assert [o.nostr_pubkey for o in got] == [b.public_key().to_hex()]
